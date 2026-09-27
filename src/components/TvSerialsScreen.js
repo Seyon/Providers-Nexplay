@@ -28,7 +28,6 @@ import {
   CHANNELS,
   REALITY_SHOWS_CACHE,
   TV_PROGRAMMES_CACHE,
-  SPECIAL_EVENTS_CACHE,
   getCachedSerialsForServer,
   findSerial
 } from '../utils/TvSerialsMetadataCache';
@@ -257,13 +256,12 @@ export default function TvSerialsScreen() {
     calendarDays.push({ day: d, key: `day-${d}` });
   }
 
-  // All selectable items for Step 2 (Serials + Reality Shows + TV Programmes + Special Events)
+  // All selectable items for Step 2 (Serials + Reality Shows + TV Programmes)
   const allSelectableItems = useMemo(() => {
     return [
       ...allServerSerials,
       ...REALITY_SHOWS_CACHE,
-      ...TV_PROGRAMMES_CACHE,
-      ...SPECIAL_EVENTS_CACHE
+      ...TV_PROGRAMMES_CACHE
     ];
   }, [allServerSerials]);
 
@@ -596,18 +594,6 @@ export default function TvSerialsScreen() {
     });
   }, [homeChannelFilter]);
 
-  const homeFilteredEvents = useMemo(() => {
-    const list = homeChannelFilter === 'all'
-      ? SPECIAL_EVENTS_CACHE
-      : SPECIAL_EVENTS_CACHE.filter(e => e.channelCode === homeChannelFilter);
-    const seen = new Set();
-    return list.filter(item => {
-      const key = (item.title || item.serialCode || '').toLowerCase().trim();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [homeChannelFilter]);
 
   // ==============================================================
   // VIEW 2: INDIVIDUAL DETAILED SERIAL SCREEN (Step 1, 2, 3 + Player below camera hole)
@@ -1046,6 +1032,8 @@ export default function TvSerialsScreen() {
             style={styles.detailScroll}
             contentContainerStyle={styles.detailScrollContent}
             showsVerticalScrollIndicator={false}
+            removeClippedSubviews={true}
+            scrollEventThrottle={16}
             delaysContentTouches={false}
             keyboardShouldPersistTaps="handled"
             canCancelContentTouches={true}
@@ -1080,14 +1068,14 @@ export default function TvSerialsScreen() {
                 {SERVERS.map((srv) => {
                   const isSelected = activeServerId === srv.id;
                   return (
-                    <TouchableOpacity
+                    <Pressable
                       key={srv.id}
-                      style={[
+                      style={({ pressed }) => [
                         styles.serverSelectButton,
-                        isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive
+                        isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive,
+                        pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
                       ]}
-                      activeOpacity={0.8}
-                      delayPressIn={0}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       onPress={() => {
                         setActiveServerId(srv.id);
                         executeScrapeAndPlay(selectedSerial, selectedDay, srv.id, currentCalendarDate);
@@ -1108,7 +1096,7 @@ export default function TvSerialsScreen() {
                       >
                         {srv.displayName}
                       </Text>
-                    </TouchableOpacity>
+                    </Pressable>
                   );
                 })}
               </View>
@@ -1118,10 +1106,12 @@ export default function TvSerialsScreen() {
             <View style={[styles.stepSection, { marginTop: verticalScale(16) }]}>
               <Text style={styles.stepHeaderTitle}>Step 2: Select Tamil Serial</Text>
 
-              <TouchableOpacity
-                style={styles.dropdownBox}
-                activeOpacity={0.8}
-                delayPressIn={0}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.dropdownBox,
+                  pressed && { opacity: 0.8 }
+                ]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 onPress={() => setDropdownVisible(true)}
               >
                 <View style={styles.dropdownLeft}>
@@ -1131,7 +1121,7 @@ export default function TvSerialsScreen() {
                   </Text>
                 </View>
                 <Ionicons name="chevron-down" size={scale(18)} color="#4b5563" />
-              </TouchableOpacity>
+              </Pressable>
 
               <Text style={styles.archiveSubtitle}>
                 Available archive tracks: {selectedSerial?.episodesCount || '1240 episodes logged'}.
@@ -1144,13 +1134,13 @@ export default function TvSerialsScreen() {
                 <Text style={styles.stepHeaderTitle}>Step 3: Select Broadcast Production Date</Text>
 
                 <View style={styles.monthNav}>
-                  <TouchableOpacity onPress={prevMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
+                  <Pressable onPress={prevMonth} style={({ pressed }) => [styles.monthNavBtn, pressed && { opacity: 0.6 }]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="chevron-back" size={scale(14)} color="#374151" />
-                  </TouchableOpacity>
+                  </Pressable>
                   <Text style={styles.monthNavLabel}>{monthName} {year}</Text>
-                  <TouchableOpacity onPress={nextMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
+                  <Pressable onPress={nextMonth} style={({ pressed }) => [styles.monthNavBtn, pressed && { opacity: 0.6 }]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="chevron-forward" size={scale(14)} color="#374151" />
-                  </TouchableOpacity>
+                  </Pressable>
                 </View>
               </View>
 
@@ -1172,14 +1162,14 @@ export default function TvSerialsScreen() {
 
                     const isSelected = selectedDay === item.day;
                     return (
-                      <TouchableOpacity
+                      <Pressable
                         key={item.key}
-                        style={[
+                        style={({ pressed }) => [
                           styles.gridDayCell,
-                          isSelected && styles.gridDayCellActive
+                          isSelected && styles.gridDayCellActive,
+                          pressed && { opacity: 0.75, transform: [{ scale: 0.95 }] }
                         ]}
-                        activeOpacity={0.75}
-                        delayPressIn={0}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                         onPress={() => {
                           setSelectedDay(item.day);
                           executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
@@ -1193,7 +1183,7 @@ export default function TvSerialsScreen() {
                         >
                           {item.day}
                         </Text>
-                      </TouchableOpacity>
+                      </Pressable>
                     );
                   })}
                 </View>
@@ -1251,13 +1241,14 @@ export default function TvSerialsScreen() {
                 {filteredDropdownSerials.map((s) => {
                   const isSelected = selectedSerial?.id === s.id;
                   return (
-                    <TouchableOpacity
+                    <Pressable
                       key={s.id}
-                      style={[
+                      style={({ pressed }) => [
                         styles.serialOptionItem,
-                        isSelected && styles.serialOptionItemActive
+                        isSelected && styles.serialOptionItemActive,
+                        pressed && { opacity: 0.7 }
                       ]}
-                      activeOpacity={0.75}
+                      hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}
                       onPress={() => {
                         setSelectedSerial(s);
                         setDropdownVisible(false);
@@ -1280,7 +1271,7 @@ export default function TvSerialsScreen() {
                       {isSelected && (
                         <Ionicons name="checkmark-circle" size={scale(20)} color="#2563eb" />
                       )}
-                    </TouchableOpacity>
+                    </Pressable>
                   );
                 })}
               </ScrollView>
@@ -1302,6 +1293,8 @@ export default function TvSerialsScreen() {
         style={styles.container}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        removeClippedSubviews={true}
+        scrollEventThrottle={16}
         delaysContentTouches={false}
         keyboardShouldPersistTaps="handled"
         canCancelContentTouches={true}
@@ -1331,10 +1324,12 @@ export default function TvSerialsScreen() {
                 </Text>
               </View>
 
-              <TouchableOpacity
-                style={styles.pauseCircleBtn}
-                activeOpacity={0.7}
-                delayPressIn={0}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.pauseCircleBtn,
+                  pressed && { opacity: 0.7 }
+                ]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 onPress={() => setIsHeroPaused((prev) => !prev)}
               >
                 <Ionicons
@@ -1342,7 +1337,7 @@ export default function TvSerialsScreen() {
                   size={scale(15)}
                   color="#ffffff"
                 />
-              </TouchableOpacity>
+              </Pressable>
             </View>
 
             {/* Hero Main Content Row */}
@@ -1366,15 +1361,17 @@ export default function TvSerialsScreen() {
 
                 {/* Action Button: Quick Play */}
                 <View style={styles.heroActionsRow}>
-                  <TouchableOpacity
-                    style={styles.quickPlayButton}
-                    activeOpacity={0.8}
-                    delayPressIn={0}
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.quickPlayButton,
+                      pressed && { opacity: 0.8, transform: [{ scale: 0.96 }] }
+                    ]}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     onPress={() => handleOpenDetailScreen(currentHero)}
                   >
                     <Ionicons name="play" size={scale(14)} color="#ffffff" style={{ marginRight: scale(5) }} />
                     <Text style={styles.quickPlayText}>Quick Play</Text>
-                  </TouchableOpacity>
+                  </Pressable>
                 </View>
               </View>
 
@@ -1394,19 +1391,19 @@ export default function TvSerialsScreen() {
               </View>
             </View>
 
-            {/* Carousel Pagination Dots (Fixed 5 major highlights) */}
+            {/* Carousel Pagination Dots (Fixed highlights) */}
             <View style={styles.paginationRow}>
               {heroHighlights.map((_, index) => {
                 const isActive = index === heroIndex;
                 return (
-                  <TouchableOpacity
+                  <Pressable
                     key={`dot-${index}`}
                     onPress={() => setHeroIndex(index)}
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    style={[
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={({ pressed }) => [
                       styles.paginationDot,
-                      isActive ? styles.paginationDotActive : styles.paginationDotInactive
+                      isActive ? styles.paginationDotActive : styles.paginationDotInactive,
+                      pressed && { opacity: 0.5 }
                     ]}
                   />
                 );
@@ -1432,14 +1429,14 @@ export default function TvSerialsScreen() {
           {CHANNELS.map((broadcaster) => {
             const isSelected = homeChannelFilter === broadcaster.id;
             return (
-              <TouchableOpacity
+              <Pressable
                 key={broadcaster.id}
-                style={[
+                style={({ pressed }) => [
                   styles.broadcasterPill,
-                  isSelected && styles.broadcasterPillSelected
+                  isSelected && styles.broadcasterPillSelected,
+                  pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] }
                 ]}
-                activeOpacity={0.75}
-                delayPressIn={0}
+                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
                 onPress={() => {
                   if (homeChannelFilter === broadcaster.id) {
                     setHomeChannelFilter('all');
@@ -1453,7 +1450,7 @@ export default function TvSerialsScreen() {
                   <Text style={styles.broadcasterName}>{broadcaster.name}</Text>
                   <Text style={styles.broadcasterTamilName}>{broadcaster.tamilName}</Text>
                 </View>
-              </TouchableOpacity>
+              </Pressable>
             );
           })}
         </ScrollView>
@@ -1468,14 +1465,14 @@ export default function TvSerialsScreen() {
 
         <View style={styles.cardsGridContainer}>
           {homeFilteredSerials.map((serial) => (
-            <TouchableOpacity
+            <Pressable
               key={serial.id}
-              style={[
+              style={({ pressed }) => [
                 styles.serialCard,
-                { borderColor: serial.borderColor || '#38bdf8' }
+                { borderColor: serial.borderColor || '#38bdf8' },
+                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
               ]}
-              activeOpacity={0.82}
-              delayPressIn={0}
+              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(serial)}
             >
               <ImageBackground
@@ -1516,7 +1513,7 @@ export default function TvSerialsScreen() {
                   </View>
                 </LinearGradient>
               </ImageBackground>
-            </TouchableOpacity>
+            </Pressable>
           ))}
         </View>
 
@@ -1527,14 +1524,14 @@ export default function TvSerialsScreen() {
 
         <View style={styles.cardsGridContainer}>
           {homeFilteredReality.map((show) => (
-            <TouchableOpacity
+            <Pressable
               key={show.id}
-              style={[
+              style={({ pressed }) => [
                 styles.serialCard,
-                { borderColor: show.borderColor || '#818cf8' }
+                { borderColor: show.borderColor || '#818cf8' },
+                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
               ]}
-              activeOpacity={0.82}
-              delayPressIn={0}
+              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(show)}
             >
               <ImageBackground
@@ -1575,25 +1572,25 @@ export default function TvSerialsScreen() {
                   </View>
                 </LinearGradient>
               </ImageBackground>
-            </TouchableOpacity>
+            </Pressable>
           ))}
         </View>
 
-        {/* 5. TV PROGRAMMES / தொலைக்காட்சி நிகழ்ச்சிகள் (NEW CATEGORY BELOW REALITY SHOWS) */}
+        {/* 5. TV PROGRAMMES / தொலைக்காட்சி நிகழ்ச்சிகள் */}
         <View style={styles.realityHeaderWrapper}>
           <Text style={styles.sectionHeaderTitleCentered}>TV Programmes / தொலைக்காட்சி நிகழ்ச்சிகள்</Text>
         </View>
 
         <View style={styles.cardsGridContainer}>
           {homeFilteredProgrammes.map((prg) => (
-            <TouchableOpacity
+            <Pressable
               key={prg.id}
-              style={[
+              style={({ pressed }) => [
                 styles.serialCard,
-                { borderColor: prg.borderColor || '#38bdf8' }
+                { borderColor: prg.borderColor || '#38bdf8' },
+                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
               ]}
-              activeOpacity={0.82}
-              delayPressIn={0}
+              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(prg)}
             >
               <ImageBackground
@@ -1634,66 +1631,7 @@ export default function TvSerialsScreen() {
                   </View>
                 </LinearGradient>
               </ImageBackground>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* 6. SPECIAL EVENTS & MEGA SHOWS / சிறப்பு நிகழ்ச்சிகள் (NO EVENTS MISSING) */}
-        <View style={styles.realityHeaderWrapper}>
-          <Text style={styles.sectionHeaderTitleCentered}>Special Events & Mega Shows / சிறப்பு நிகழ்ச்சிகள்</Text>
-        </View>
-
-        <View style={styles.cardsGridContainer}>
-          {homeFilteredEvents.map((evt) => (
-            <TouchableOpacity
-              key={evt.id}
-              style={[
-                styles.serialCard,
-                { borderColor: evt.borderColor || '#c084fc' }
-              ]}
-              activeOpacity={0.82}
-              delayPressIn={0}
-              onPress={() => handleOpenDetailScreen(evt)}
-            >
-              <ImageBackground
-                source={{ uri: evt.image }}
-                style={styles.cardImageBg}
-                imageStyle={styles.cardImageBgInner}
-                resizeMode="cover"
-              >
-                <LinearGradient
-                  colors={['rgba(15, 23, 42, 0.45)', 'rgba(15, 23, 42, 0.82)', '#090d16']}
-                  style={styles.cardGradientOverlay}
-                >
-                  {/* Top row: Channel Badge + Tag */}
-                  <View style={styles.cardTopRow}>
-                    <View style={styles.channelBadgePill}>
-                      <ChannelLogo channelCode={evt.channelCode} size={scale(11)} style={{ marginRight: scale(4) }} />
-                      <Text style={styles.channelBadgeText}>{evt.channel}</Text>
-                    </View>
-                    <View style={styles.cardSlotBadge}>
-                      <Text style={styles.cardSlotBadgeText}>{evt.tag || 'Mega Event'}</Text>
-                    </View>
-                  </View>
-
-                  {/* Center: Title + Tamil Subtitle */}
-                  <View style={styles.cardTitleContainer}>
-                    <Text style={styles.cardTitleText} numberOfLines={1}>
-                      {evt.title}
-                    </Text>
-                    <Text style={[styles.cardTamilTitleText, { color: evt.tamilColor || '#c084fc' }]} numberOfLines={1}>
-                      {evt.tamilTitle}
-                    </Text>
-                  </View>
-
-                  {/* Bottom: Genre + Air info */}
-                  <View style={styles.cardBottomRow}>
-                    <Text style={styles.cardMetaLeft}>{evt.genre}</Text>
-                    <Text style={styles.cardMetaRight}>{evt.timeSlot}</Text>
-                  </View>
-                </LinearGradient>
-              </ImageBackground>
-            </TouchableOpacity>
+            </Pressable>
           ))}
         </View>
       </ScrollView>

@@ -1,15 +1,23 @@
 {
   "major": 1,
   "minor": 7,
-  "patch": 0,
+  "patch": 9,
   "issue": 0,
-  "build": 133,
-  "updateType": "minor",
+  "build": 134,
+  "updateType": "patch",
   "timestamp": "20260927",
-  "versionName": "1.7.0.0.133-minor.20260927",
-  "versionCode": 1700133,
-  "lastSuccessfulBuild": "2026-09-27T09:50:47.704Z",
+  "versionName": "1.7.9.0.134-patch.20260927",
+  "versionCode": 1790134,
+  "lastSuccessfulBuild": "2026-09-27T15:57:11.017Z",
   "history": [
+    {
+      "versionName": "1.7.9.0.134-patch.20260927",
+      "versionCode": 1790134,
+      "updateType": "patch",
+      "build": 134,
+      "note": "Eliminate touch delays, remove Tamildhool/Tamilgun names, remove reload stream, add Bigg Boss 10 prime show, format release APKs",
+      "builtAt": "2026-09-27T15:57:11.017Z"
+    },
     {
       "versionName": "1.7.0.0.133-minor.20260927",
       "versionCode": 1700133,

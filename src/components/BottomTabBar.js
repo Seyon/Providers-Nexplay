@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
@@ -37,15 +37,14 @@ export default function BottomTabBar({ activeTab = 'Home', onTabPress }) {
             const tintColor = isActive ? '#38bdf8' : '#a1a1aa';
 
             return (
-              <TouchableOpacity
+              <Pressable
                 key={tab.name}
-                style={[
+                style={({ pressed }) => [
                   styles.tabButton,
-                  isActive && styles.tabButtonActive
+                  isActive && styles.tabButtonActive,
+                  pressed && { opacity: 0.65 }
                 ]}
-                activeOpacity={0.6}
-                delayPressIn={0}
-                hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                hitSlop={{ top: 14, bottom: 14, left: 8, right: 8 }}
                 onPress={() => onTabPress && onTabPress(tab.name)}
               >
                 <Ionicons
@@ -63,7 +62,7 @@ export default function BottomTabBar({ activeTab = 'Home', onTabPress }) {
                   {tab.label}
                 </Text>
                 {isActive && <View style={styles.activeDot} />}
-              </TouchableOpacity>
+              </Pressable>
             );
           })}
         </View>
