@@ -256,6 +256,8 @@ export default function TvSerialsScreen() {
     calendarDays.push({ day: d, key: `day-${d}` });
   }
 
+  const calendarCellWidth = Math.floor((windowWidth - scale(28) - scale(20)) / 7);
+
   // All selectable items for Step 2 (Serials + Reality Shows + TV Programmes)
   const allSelectableItems = useMemo(() => {
     return [
@@ -1068,14 +1070,14 @@ export default function TvSerialsScreen() {
                 {SERVERS.map((srv) => {
                   const isSelected = activeServerId === srv.id;
                   return (
-                    <Pressable
+                    <TouchableOpacity
                       key={srv.id}
-                      style={({ pressed }) => [
+                      style={[
                         styles.serverSelectButton,
-                        isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive,
-                        pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
+                        isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive
                       ]}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      activeOpacity={0.7}
+                      delayPressIn={0}
                       onPress={() => {
                         setActiveServerId(srv.id);
                         executeScrapeAndPlay(selectedSerial, selectedDay, srv.id, currentCalendarDate);
@@ -1096,7 +1098,7 @@ export default function TvSerialsScreen() {
                       >
                         {srv.displayName}
                       </Text>
-                    </Pressable>
+                    </TouchableOpacity>
                   );
                 })}
               </View>
@@ -1106,12 +1108,10 @@ export default function TvSerialsScreen() {
             <View style={[styles.stepSection, { marginTop: verticalScale(16) }]}>
               <Text style={styles.stepHeaderTitle}>Step 2: Select Tamil Serial</Text>
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.dropdownBox,
-                  pressed && { opacity: 0.8 }
-                ]}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              <TouchableOpacity
+                style={styles.dropdownBox}
+                activeOpacity={0.7}
+                delayPressIn={0}
                 onPress={() => setDropdownVisible(true)}
               >
                 <View style={styles.dropdownLeft}>
@@ -1121,7 +1121,7 @@ export default function TvSerialsScreen() {
                   </Text>
                 </View>
                 <Ionicons name="chevron-down" size={scale(18)} color="#4b5563" />
-              </Pressable>
+              </TouchableOpacity>
 
               <Text style={styles.archiveSubtitle}>
                 Available archive tracks: {selectedSerial?.episodesCount || '1240 episodes logged'}.
@@ -1134,13 +1134,13 @@ export default function TvSerialsScreen() {
                 <Text style={styles.stepHeaderTitle}>Step 3: Select Broadcast Production Date</Text>
 
                 <View style={styles.monthNav}>
-                  <Pressable onPress={prevMonth} style={({ pressed }) => [styles.monthNavBtn, pressed && { opacity: 0.6 }]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <TouchableOpacity onPress={prevMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
                     <Ionicons name="chevron-back" size={scale(14)} color="#374151" />
-                  </Pressable>
+                  </TouchableOpacity>
                   <Text style={styles.monthNavLabel}>{monthName} {year}</Text>
-                  <Pressable onPress={nextMonth} style={({ pressed }) => [styles.monthNavBtn, pressed && { opacity: 0.6 }]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <TouchableOpacity onPress={nextMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
                     <Ionicons name="chevron-forward" size={scale(14)} color="#374151" />
-                  </Pressable>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1157,19 +1157,20 @@ export default function TvSerialsScreen() {
                 <View style={styles.calendarDaysGrid}>
                   {calendarDays.map((item) => {
                     if (item.day === null) {
-                      return <View key={item.key} style={styles.emptyGridCell} />;
+                      return <View key={item.key} style={[styles.emptyGridCell, { width: calendarCellWidth, height: calendarCellWidth }]} />;
                     }
 
                     const isSelected = selectedDay === item.day;
                     return (
-                      <Pressable
+                      <TouchableOpacity
                         key={item.key}
-                        style={({ pressed }) => [
+                        style={[
                           styles.gridDayCell,
-                          isSelected && styles.gridDayCellActive,
-                          pressed && { opacity: 0.75, transform: [{ scale: 0.95 }] }
+                          { width: calendarCellWidth, height: calendarCellWidth },
+                          isSelected && styles.gridDayCellActive
                         ]}
-                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        activeOpacity={0.7}
+                        delayPressIn={0}
                         onPress={() => {
                           setSelectedDay(item.day);
                           executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
@@ -1183,7 +1184,7 @@ export default function TvSerialsScreen() {
                         >
                           {item.day}
                         </Text>
-                      </Pressable>
+                      </TouchableOpacity>
                     );
                   })}
                 </View>
@@ -2203,16 +2204,14 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   emptyGridCell: {
-    width: `${100 / 7}%`,
     height: verticalScale(36),
   },
   gridDayCell: {
-    width: `${100 / 7}%`,
     height: verticalScale(36),
     justifyContent: 'center',
     alignItems: 'center',
     marginVertical: verticalScale(2),
-    borderRadius: scale(6),
+    borderRadius: scale(8),
     backgroundColor: '#f1f5f9',
   },
   gridDayCellActive: {
