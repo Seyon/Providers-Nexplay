@@ -14,7 +14,8 @@ import {
   ActivityIndicator,
   StatusBar,
   PanResponder,
-  Pressable
+  Pressable,
+  BackHandler
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5, MaterialIcons } from '@expo/vector-icons';
@@ -118,10 +119,55 @@ export default function TvSerialsScreen() {
   const [controlsVisible, setControlsVisible] = useState(true);
   const controlsOpacity = useRef(new Animated.Value(1)).current;
   const controlsTimerRef = useRef(null);
+  const bufferingTimeoutRef = useRef(null);
   const isScrubbingRef = useRef(false);
+  const pendingSeekTimeRef = useRef(null);
+  const lastSeekTimestampRef = useRef(0);
+  const scrubStartLocationX = useRef(0);
   const scrubberWidthRef = useRef(windowWidth - scale(28));
   const [scrubberWidth, setScrubberWidth] = useState(windowWidth - scale(28));
   const vlcPlayerRef = useRef(null);
+
+  // Synchronize Hardware Screen Orientation and Fullscreen System UI
+  useEffect(() => {
+    const handleOrientation = async () => {
+      try {
+        if (isFullscreen) {
+          if (ScreenOrientation && typeof ScreenOrientation.lockAsync === 'function') {
+            await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+          }
+          StatusBar.setHidden(true, 'fade');
+        } else {
+          if (ScreenOrientation && typeof ScreenOrientation.lockAsync === 'function') {
+            await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+          }
+          StatusBar.setHidden(false, 'fade');
+        }
+      } catch (e) {
+        console.warn('[TvSerialsScreen] Orientation error:', e);
+      }
+    };
+    handleOrientation();
+  }, [isFullscreen]);
+
+  // Hardware Back Button handler (Minimizes fullscreen or navigates back)
+  useEffect(() => {
+    const onBackPress = () => {
+      if (isFullscreen) {
+        setIsFullscreen(false);
+        return true;
+      }
+      if (isDetailView) {
+        setIsPlaying(false);
+        setIsPlayerActive(false);
+        setIsDetailView(false);
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [isFullscreen, isDetailView]);
 
   // Pulse animation for Live Broadcast dot & Decryptor Engine node
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -309,6 +355,64 @@ export default function TvSerialsScreen() {
     resetControlsTimeout();
   };
 
+  // Dynamic seconds counter and total duration formatter
+  const formatTime = (seconds) => {
+    if (isNaN(seconds) || seconds == null || seconds < 0) return '00:00';
+    const totalSecs = Math.floor(seconds);
+    const hrs = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+    const formattedSecs = secs < 10 ? `0${secs}` : `${secs}`;
+    if (hrs > 0) {
+      const formattedMins = mins < 10 ? `0${mins}` : `${mins}`;
+      return `${hrs}:${formattedMins}:${formattedSecs}`;
+    }
+    return `${mins < 10 ? '0' : ''}${mins}:${formattedSecs}`;
+  };
+
+  // Robust seek handler for VLC Player View
+  const seekToTimestamp = (targetSeconds) => {
+    if (!vlcPlayerRef.current) return;
+    const num = Number(targetSeconds);
+    if (isNaN(num) || !isFinite(num)) return;
+    const safeDuration = (typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320;
+    const target = Math.max(0, Math.min(safeDuration, num));
+
+    pendingSeekTimeRef.current = target;
+    lastSeekTimestampRef.current = Date.now();
+    setPlaybackTime(target);
+
+    try {
+      vlcPlayerRef.current.seek(target);
+    } catch (e) {
+      console.warn('[TvSerialsScreen] seek error:', e);
+    }
+    resetControlsTimeout();
+  };
+
+  const handleSeek = (delta) => {
+    const safeDuration = (typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320;
+    const current = (typeof playbackTime === 'number' && !isNaN(playbackTime)) ? playbackTime : 0;
+    seekToTimestamp(Math.max(0, Math.min(safeDuration, current + delta)));
+  };
+
+  const getScrubberSeekTime = (evt, gestureState) => {
+    const safeDuration = (typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320;
+    const curWidth = scrubberWidthRef.current || scrubberWidth || (windowWidth - scale(28));
+    if (curWidth <= 0) return 0;
+
+    let touchX = -1;
+    if (gestureState && typeof gestureState.dx === 'number' && Math.abs(gestureState.dx) > 0 && scrubStartLocationX.current >= 0) {
+      touchX = scrubStartLocationX.current + gestureState.dx;
+    } else if (typeof evt?.nativeEvent?.locationX === 'number' && evt.nativeEvent.locationX >= 0) {
+      touchX = evt.nativeEvent.locationX;
+    }
+
+    if (touchX < 0) touchX = 0;
+    const progress = Math.max(0, Math.min(1, touchX / curWidth));
+    return progress * safeDuration;
+  };
+
   // Interactive timeline scrubber gesture responder
   const scrubberPanResponder = useMemo(() => {
     return PanResponder.create({
@@ -316,34 +420,26 @@ export default function TvSerialsScreen() {
       onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: (evt) => {
+      onPanResponderGrant: (evt, gestureState) => {
         isScrubbingRef.current = true;
-        const locX = evt.nativeEvent.locationX;
-        const curWidth = scrubberWidthRef.current || scrubberWidth || (windowWidth - scale(28));
-        const progress = Math.max(0, Math.min(1, locX / (curWidth || 1)));
-        if (playbackDuration > 0) setPlaybackTime(progress * playbackDuration);
+        const locX = evt?.nativeEvent?.locationX;
+        scrubStartLocationX.current = (typeof locX === 'number' && locX >= 0) ? locX : 0;
+        const targetSeekTime = getScrubberSeekTime(evt, gestureState);
+        setPlaybackTime(targetSeekTime);
         resetControlsTimeout();
       },
-      onPanResponderMove: (evt) => {
-        const locX = evt.nativeEvent.locationX;
-        const curWidth = scrubberWidthRef.current || scrubberWidth || (windowWidth - scale(28));
-        const progress = Math.max(0, Math.min(1, locX / (curWidth || 1)));
-        if (playbackDuration > 0) setPlaybackTime(progress * playbackDuration);
+      onPanResponderMove: (evt, gestureState) => {
+        const targetSeekTime = getScrubberSeekTime(evt, gestureState);
+        setPlaybackTime(targetSeekTime);
         resetControlsTimeout();
       },
-      onPanResponderRelease: (evt) => {
-        const locX = evt.nativeEvent.locationX;
-        const curWidth = scrubberWidthRef.current || scrubberWidth || (windowWidth - scale(28));
-        const progress = Math.max(0, Math.min(1, locX / (curWidth || 1)));
-        if (vlcPlayerRef.current && playbackDuration > 0) {
-          vlcPlayerRef.current.seek(progress);
-        }
+      onPanResponderRelease: (evt, gestureState) => {
         isScrubbingRef.current = false;
-        resetControlsTimeout();
+        const targetSeekTime = getScrubberSeekTime(evt, gestureState);
+        seekToTimestamp(targetSeekTime);
       },
       onPanResponderTerminate: () => {
         isScrubbingRef.current = false;
-        resetControlsTimeout();
       }
     });
   }, [playbackDuration, scrubberWidth, resetControlsTimeout]);
@@ -359,15 +455,24 @@ export default function TvSerialsScreen() {
     const dateStr = `${d}-${m}-${y}`;
     const metadata = buildMetadataString(targetSerial, dayNum, calDate, serverId);
 
+    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
     setActiveMetadataQuery(metadata);
     setActiveMetadataDisplay(metadata);
     setIsLoadingStream(true);
     setIsPlayerActive(true);
     setIsPlaying(true);
     setIsBuffering(true);
+    setPlaybackTime(0);
+    pendingSeekTimeRef.current = null;
     resetControlsTimeout();
     const serverLabel = serverId === 'tamilgun' ? 'Server 2 (Tamilgun)' : 'Server 1 (Tamildhool)';
     setScraperLoadingMessage(`Querying ${serverLabel} for:\n${metadata}`);
+
+    // Set safety timeout to guarantee buffering clears even if stream stalls
+    bufferingTimeoutRef.current = setTimeout(() => {
+      setIsBuffering(false);
+      setIsLoadingStream(false);
+    }, 6000);
 
     try {
       const res = await scrapeEpisodeStreamWithMetadata(metadata, targetSerial, dateStr, serverId);
@@ -378,14 +483,20 @@ export default function TvSerialsScreen() {
         setScrapedServerName(res.server || serverLabel);
         setActiveMetadataDisplay(metadata);
       } else {
-        setCurrentStreamUrl(targetSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+        const fallbackStream = (targetSerial.streamUrl && !targetSerial.streamUrl.includes('commondatastorage')) 
+          ? targetSerial.streamUrl 
+          : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+        setCurrentStreamUrl(fallbackStream);
         setCurrentStreamHeaders({});
         setCurrentStreamReferer('');
         setScrapedServerName('Standard Stream');
       }
     } catch (err) {
       console.warn('[TvSerialsScreen] Live scraper error:', err?.message || err);
-      setCurrentStreamUrl(targetSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+      const fallbackStream = (targetSerial.streamUrl && !targetSerial.streamUrl.includes('commondatastorage')) 
+        ? targetSerial.streamUrl 
+        : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+      setCurrentStreamUrl(fallbackStream);
     } finally {
       setIsLoadingStream(false);
     }
@@ -398,36 +509,14 @@ export default function TvSerialsScreen() {
   };
 
   // Fullscreen toggle handler
-  const toggleFullscreen = async () => {
-    if (!isFullscreen) {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      setIsFullscreen(true);
-    } else {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-      setIsFullscreen(false);
-    }
+  const toggleFullscreen = () => {
+    setIsFullscreen(prev => !prev);
     resetControlsTimeout();
-  };
-
-  const handleSeek = (delta) => {
-    if (!vlcPlayerRef.current || playbackDuration <= 0) return;
-    const newTime = Math.max(0, Math.min(playbackDuration, playbackTime + delta));
-    const targetPos = newTime / playbackDuration;
-    vlcPlayerRef.current.seek(targetPos);
-    setPlaybackTime(newTime);
-    resetControlsTimeout();
-  };
-
-  const formatTime = (seconds) => {
-    if (!seconds || isNaN(seconds)) return '00:00';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
   // Active Stream Source strictly configured for existing VLCPlayerView with Hardware Decoding
   const activeStreamSource = useMemo(() => {
-    const playUri = currentStreamUrl || selectedSerial?.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+    const playUri = currentStreamUrl || ((selectedSerial?.streamUrl && !selectedSerial.streamUrl.includes('commondatastorage')) ? selectedSerial.streamUrl : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
     const initOptions = [
       '--network-caching=2000',
       '--live-caching=2000',
@@ -435,23 +524,28 @@ export default function TvSerialsScreen() {
       '--skip-frames'
     ];
 
+    const mediaOptions = [
+      ':network-caching=2000',
+      ':live-caching=2000',
+      ':http-reconnect=true',
+      ':no-stats'
+    ];
+
     const ref = currentStreamReferer || currentStreamHeaders?.Referer || currentStreamHeaders?.referer;
-    if (ref) {
+    if (ref && !playUri.includes('mux.dev') && !playUri.includes('commondatastorage')) {
       initOptions.push(`--http-referrer=${ref}`);
+      mediaOptions.push(`:http-referrer=${ref}`);
     }
     const ua = currentStreamHeaders?.['User-Agent'] || currentStreamHeaders?.['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
     if (ua) {
       initOptions.push(`--http-user-agent=${ua}`);
+      mediaOptions.push(`:http-user-agent=${ua}`);
     }
 
     return {
       uri: playUri,
       hwDecoderEnabled: VLCHardwareDecoder?.Automatic,
-      mediaOptions: [
-        ':network-caching=2000',
-        ':http-reconnect=true',
-        ':no-stats'
-      ],
+      mediaOptions,
       initOptions
     };
   }, [currentStreamUrl, currentStreamReferer, currentStreamHeaders, selectedSerial]);
@@ -514,16 +608,39 @@ export default function TvSerialsScreen() {
   // ==============================================================
   if (isDetailView && selectedSerial) {
     return (
-      <View style={[styles.detailScreenContainer, { paddingTop: topNotchPadding }]}>
-        <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+      <View style={[styles.detailScreenContainer, { paddingTop: isFullscreen ? 0 : topNotchPadding }]}>
+        <StatusBar barStyle="light-content" translucent backgroundColor="transparent" hidden={isFullscreen} />
 
-        {/* FULLSCREEN VIDEO PLAYER MODAL (Identical UI/UX layout to MovieDetailScreen) */}
-        {isFullscreen && isPlayerActive && (
-          <Modal visible={isFullscreen} transparent={false} animationType="fade">
-            <View style={styles.fullscreenContainer}>
-              <StatusBar hidden={true} />
+        {/* TOP NAVIGATION BAR: BACK TO TV SERIALS HOME (Shown only in portrait) */}
+        {!isFullscreen && (
+          <View style={styles.detailNavBar}>
+            <TouchableOpacity
+              style={styles.detailBackBtn}
+              onPress={() => {
+                setIsPlaying(false);
+                setIsPlayerActive(false);
+                setIsDetailView(false);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="arrow-back" size={scale(20)} color="#ffffff" />
+              <Text style={styles.detailBackBtnText}>TV Serials Home</Text>
+            </TouchableOpacity>
+
+            <View style={styles.detailServerBadge}>
+              <View style={[styles.statusDot, { backgroundColor: '#22c55e' }]} />
+              <Text style={styles.detailServerBadgeText}>{activeServer.displayName}</Text>
+            </View>
+          </View>
+        )}
+
+        {/* UNIFIED SINGLE VLC VIDEO PLAYER (Seamless transition between Inline and Fullscreen) */}
+        <View style={isFullscreen ? styles.fullscreenPlayerWrapper : styles.playerContainer}>
+          {isPlayerActive ? (
+            <View style={isFullscreen ? styles.fullscreenPlayerBox : styles.playerBox}>
               <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
                 <VLCPlayerView
+                  key={`${activeServerId}_${currentStreamUrl || 'default'}`}
                   ref={vlcPlayerRef}
                   source={activeStreamSource}
                   autoplay={true}
@@ -539,22 +656,44 @@ export default function TvSerialsScreen() {
                     setIsBuffering(true);
                   }}
                   onLoad={(event) => {
+                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
                     setIsBuffering(false);
-                    if (event?.duration && event.duration > 0) {
-                      setPlaybackDuration(event.duration / 1000);
+                    setIsLoadingStream(false);
+                    if (typeof event?.duration === 'number' && event.duration > 0) {
+                      setPlaybackDuration(event.duration);
                     }
                   }}
                   onProgress={(event) => {
                     if (!isScrubbingRef.current) {
-                      setPlaybackTime(event.currentTime / 1000);
-                      if (event.duration > 0) {
-                        setPlaybackDuration(event.duration / 1000);
+                      const cur = event?.currentTime;
+                      if (typeof cur === 'number' && !isNaN(cur)) {
+                        if (pendingSeekTimeRef.current !== null) {
+                          const elapsed = Date.now() - lastSeekTimestampRef.current;
+                          if (Math.abs(cur - pendingSeekTimeRef.current) > 3) {
+                            if (elapsed < 4000) {
+                              return;
+                            }
+                          }
+                          pendingSeekTimeRef.current = null;
+                        }
+                        setPlaybackTime(cur);
+                      }
+                      if (typeof event?.duration === 'number' && event.duration > 0) {
+                        setPlaybackDuration(event.duration);
                       }
                     }
                   }}
+                  onSeek={(event) => {
+                    if (typeof event?.currentTime === 'number' && !isNaN(event.currentTime)) {
+                      setPlaybackTime(event.currentTime);
+                    }
+                    pendingSeekTimeRef.current = null;
+                  }}
                   onPlaying={() => {
+                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
                     setIsPlaying(true);
                     setIsBuffering(false);
+                    setIsLoadingStream(false);
                   }}
                   onPaused={() => {
                     setIsPlaying(false);
@@ -563,30 +702,32 @@ export default function TvSerialsScreen() {
                     setIsBuffering(Boolean(event?.isBuffering));
                   }}
                   onError={(err) => {
-                    console.warn('[VLCPlayer Fullscreen] Playback error:', err);
+                    console.warn('[VLCPlayer] Playback error:', err);
+                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
                     setIsBuffering(false);
+                    setIsLoadingStream(false);
                   }}
                   onEnd={() => {
                     setIsPlaying(false);
                   }}
                 />
 
-                {/* Centered Floating Buffering Indicator */}
+                {/* Floating Centered Buffering Spinner */}
                 {isBuffering && !controlsVisible && !isLoadingStream && (
                   <View pointerEvents="none" style={styles.floatingBufferingContainer}>
                     <View style={styles.floatingBufferingCircle}>
-                      <ActivityIndicator size="large" color="#38bdf8" />
+                      <ActivityIndicator size={isFullscreen ? 'large' : 'small'} color="#38bdf8" />
                     </View>
                   </View>
                 )}
 
-                {/* Scraper Resolving Loader Overlay */}
+                {/* Live Scraper Resolving Loader Overlay */}
                 {isLoadingStream && (
                   <View style={styles.scraperLoaderOverlay} pointerEvents="auto">
                     <View style={styles.scraperLoaderCard}>
                       <ActivityIndicator size="large" color="#38bdf8" />
                       <View style={styles.scraperQueryBadge}>
-                        <Ionicons name="search" size={scale(14)} color="#38bdf8" style={{ marginRight: scale(6) }} />
+                        <Ionicons name="search" size={scale(13)} color="#38bdf8" style={{ marginRight: scale(5) }} />
                         <Text style={styles.scraperQueryBadgeText}>
                           {activeServerId === 'tamilgun' ? 'Server 2 Search' : 'Server 1 Search'}
                         </Text>
@@ -601,98 +742,108 @@ export default function TvSerialsScreen() {
                   </View>
                 )}
 
-                {/* Fullscreen Controls Overlay */}
+                {/* CONTROLS OVERLAY (Matching MovieDetailScreen VLC Player UI/UX Layout) */}
                 {!isLoadingStream && (
                   <Animated.View
                     pointerEvents={controlsVisible ? 'box-none' : 'none'}
                     style={[
                       StyleSheet.absoluteFill,
                       styles.vlcControlsOverlay,
-                      styles.fullscreenControlsPadding,
+                      isFullscreen ? styles.fullscreenControlsPadding : null,
                       { opacity: controlsOpacity }
                     ]}
                   >
-                    {/* Top Row */}
+                    {/* Top Row: Back button (Minimizes if in fullscreen, stops if normal) + Title/Date + Server badge + Aspect Ratio + Fullscreen */}
                     <View style={styles.vlcTopBar}>
                       <View style={styles.vlcTopLeft}>
                         <TouchableOpacity
-                          style={styles.vlcCircularBtn}
-                          onPress={toggleFullscreen}
+                          style={[styles.vlcCircularBtn, isFullscreen ? { width: scale(40), height: scale(40), borderRadius: scale(20) } : null]}
+                          onPress={() => {
+                            if (isFullscreen) {
+                              toggleFullscreen();
+                            } else {
+                              setIsPlaying(false);
+                              setIsPlayerActive(false);
+                            }
+                          }}
                           activeOpacity={0.8}
                         >
-                          <Ionicons name="arrow-back" size={scale(20)} color="#ffffff" />
+                          <Ionicons name="arrow-back" size={isFullscreen ? scale(20) : scale(16)} color="#ffffff" />
                         </TouchableOpacity>
-                        <View style={{ marginLeft: scale(12), flex: 1 }}>
-                          <Text style={[styles.vlcTitleText, { fontSize: moderateScale(16) }]} numberOfLines={1}>
+                        <View style={{ marginLeft: scale(8), flex: 1 }}>
+                          <Text style={[styles.vlcTitleText, isFullscreen ? { fontSize: moderateScale(16) } : null]} numberOfLines={1}>
                             {selectedSerial?.title || 'Tamil Serial'}
                           </Text>
-                          <Text style={[styles.vlcSubtitleText, { fontSize: moderateScale(12) }]} numberOfLines={1}>
+                          <Text style={[styles.vlcSubtitleText, isFullscreen ? { fontSize: moderateScale(12) } : null]} numberOfLines={1}>
                             {selectedDay} {monthName} {year} • {activeServer.displayName}
                           </Text>
                         </View>
                       </View>
 
                       <View style={styles.vlcTopRight}>
+                        {/* Quick Server Switcher Badge Pill */}
                         <TouchableOpacity
-                          style={styles.vlcServerBadgePill}
+                          style={[styles.vlcServerBadgePill, isFullscreen ? { height: scale(32), paddingHorizontal: scale(10) } : null]}
                           onPress={togglePlayerServer}
                           activeOpacity={0.8}
                         >
                           <View style={styles.vlcServerDot} />
-                          <Text style={styles.vlcServerBadgeText}>
+                          <Text style={[styles.vlcServerBadgeText, isFullscreen ? { fontSize: moderateScale(11) } : null]}>
                             {activeServer.displayName}
                           </Text>
                         </TouchableOpacity>
 
+                        {/* Aspect Ratio Mode */}
                         <TouchableOpacity
-                          style={styles.vlcCircularBtn}
+                          style={[styles.vlcCircularBtn, isFullscreen ? { width: scale(40), height: scale(40), borderRadius: scale(20) } : null]}
                           onPress={toggleContentFitMode}
                           activeOpacity={0.8}
                         >
                           <MaterialCommunityIcons
                             name={contentFitMode === 'cover' ? 'aspect-ratio' : 'fit-to-screen'}
-                            size={scale(18)}
+                            size={isFullscreen ? scale(18) : scale(16)}
                             color={contentFitMode === 'cover' ? '#38bdf8' : '#ffffff'}
                           />
                         </TouchableOpacity>
 
+                        {/* Fullscreen Toggle Button */}
                         <TouchableOpacity
-                          style={styles.vlcCircularBtn}
+                          style={[styles.vlcCircularBtn, isFullscreen ? { width: scale(40), height: scale(40), borderRadius: scale(20) } : null]}
                           onPress={toggleFullscreen}
                           activeOpacity={0.8}
                         >
                           <MaterialCommunityIcons
-                            name="fullscreen-exit"
-                            size={scale(20)}
+                            name={isFullscreen ? "fullscreen-exit" : "fullscreen"}
+                            size={isFullscreen ? scale(20) : scale(16)}
                             color="#ffffff"
                           />
                         </TouchableOpacity>
                       </View>
                     </View>
 
-                    {/* Center Controls */}
-                    <View style={[styles.vlcCenterControls, { gap: scale(48) }]}>
+                    {/* Center Controls: Rewind 10s, Big Play/Pause, Forward 10s */}
+                    <View style={[styles.vlcCenterControls, isFullscreen ? { gap: scale(48) } : null]}>
                       <TouchableOpacity
                         onPress={() => handleSeek(-10)}
                         activeOpacity={0.75}
-                        style={[styles.vlcSkipBtn, { width: scale(52), height: scale(52), borderRadius: scale(26) }]}
+                        style={[styles.vlcSkipBtn, isFullscreen ? { width: scale(52), height: scale(52), borderRadius: scale(26) } : null]}
                       >
-                        <MaterialIcons name="replay-10" size={scale(30)} color="#ffffff" />
+                        <MaterialIcons name="replay-10" size={isFullscreen ? scale(28) : scale(22)} color="#ffffff" />
                       </TouchableOpacity>
 
                       <TouchableOpacity
                         onPress={() => setIsPlaying(prev => !prev)}
                         activeOpacity={0.85}
-                        style={[styles.vlcPlayPauseBtn, { width: scale(68), height: scale(68), borderRadius: scale(34) }]}
+                        style={[styles.vlcPlayPauseBtn, isFullscreen ? { width: scale(68), height: scale(68), borderRadius: scale(34) } : null]}
                       >
                         {isBuffering ? (
-                          <ActivityIndicator size="large" color="#0284c7" />
+                          <ActivityIndicator size={isFullscreen ? "large" : "small"} color="#0284c7" />
                         ) : (
                           <Ionicons
                             name={isPlaying ? 'pause' : 'play'}
-                            size={scale(34)}
+                            size={isFullscreen ? scale(34) : scale(26)}
                             color="#000000"
-                            style={!isPlaying ? { marginLeft: scale(4) } : null}
+                            style={!isPlaying ? { marginLeft: scale(3) } : null}
                           />
                         )}
                       </TouchableOpacity>
@@ -700,17 +851,17 @@ export default function TvSerialsScreen() {
                       <TouchableOpacity
                         onPress={() => handleSeek(10)}
                         activeOpacity={0.75}
-                        style={[styles.vlcSkipBtn, { width: scale(52), height: scale(52), borderRadius: scale(26) }]}
+                        style={[styles.vlcSkipBtn, isFullscreen ? { width: scale(52), height: scale(52), borderRadius: scale(26) } : null]}
                       >
-                        <MaterialIcons name="forward-10" size={scale(30)} color="#ffffff" />
+                        <MaterialIcons name="forward-10" size={isFullscreen ? scale(28) : scale(22)} color="#ffffff" />
                       </TouchableOpacity>
                     </View>
 
-                    {/* Bottom Row */}
+                    {/* Bottom Row: Scrubber, Timestamps & Feature Toolbar */}
                     <View style={styles.vlcBottomContainer}>
                       {/* Scrubber Progress Bar */}
                       <View
-                        style={[styles.vlcScrubberTouchArea, { height: verticalScale(32) }]}
+                        style={[styles.vlcScrubberTouchArea, isFullscreen ? { height: verticalScale(32) } : null]}
                         onLayout={(e) => {
                           const w = e.nativeEvent.layout.width;
                           scrubberWidthRef.current = w;
@@ -718,25 +869,20 @@ export default function TvSerialsScreen() {
                         }}
                         {...scrubberPanResponder.panHandlers}
                       >
-                        <View pointerEvents="none" style={[styles.vlcScrubberTrack, { height: verticalScale(4.5) }]}>
+                        <View pointerEvents="none" style={[styles.vlcScrubberTrack, isFullscreen ? { height: verticalScale(4.5) } : null]}>
                           <View
                             pointerEvents="none"
                             style={[
                               styles.vlcScrubberFill,
-                              { width: `${playbackDuration > 0 ? Math.min(100, Math.max(0, (playbackTime / playbackDuration) * 100)) : 0}%` }
+                              { width: `${Math.min(100, Math.max(0, (playbackTime / ((typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320)) * 100))}%` }
                             ]}
                           />
                           <View
                             pointerEvents="none"
                             style={[
                               styles.vlcScrubberThumb,
-                              { 
-                                width: scale(14), 
-                                height: scale(14), 
-                                borderRadius: scale(7), 
-                                top: verticalScale(-4.75),
-                                left: `${playbackDuration > 0 ? Math.min(100, Math.max(0, (playbackTime / playbackDuration) * 100)) : 0}%` 
-                              }
+                              isFullscreen ? { width: scale(14), height: scale(14), borderRadius: scale(7), top: verticalScale(-4.75) } : null,
+                              { left: `${Math.min(100, Math.max(0, (playbackTime / ((typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320)) * 100))}%` }
                             ]}
                           />
                         </View>
@@ -744,40 +890,42 @@ export default function TvSerialsScreen() {
 
                       {/* Timestamps */}
                       <View style={styles.vlcTimestampsRow}>
-                        <Text style={[styles.vlcTimeTextLeft, { fontSize: moderateScale(12) }]}>{formatTime(playbackTime)}</Text>
-                        <Text style={[styles.vlcTimeTextRight, { fontSize: moderateScale(12) }]}>{playbackDuration > 0 ? formatTime(playbackDuration) : '--:--'}</Text>
+                        <Text style={[styles.vlcTimeTextLeft, isFullscreen ? { fontSize: moderateScale(12) } : null]}>{formatTime(playbackTime)}</Text>
+                        <Text style={[styles.vlcTimeTextRight, isFullscreen ? { fontSize: moderateScale(12) } : null]}>
+                          {formatTime((typeof playbackDuration === 'number' && playbackDuration > 0) ? playbackDuration : 1320)}
+                        </Text>
                       </View>
 
                       {/* Features Row */}
-                      <View style={[styles.vlcFeaturesRow, { marginTop: verticalScale(10), gap: scale(14) }]}>
+                      <View style={[styles.vlcFeaturesRow, isFullscreen ? { marginTop: verticalScale(10), gap: scale(14) } : null]}>
                         {/* Server Switcher Pill */}
                         <TouchableOpacity
                           onPress={togglePlayerServer}
                           activeOpacity={0.8}
-                          style={[styles.vlcFeatureBtnPill, { height: scale(34), paddingHorizontal: scale(14) }]}
+                          style={[styles.vlcFeatureBtnPill, isFullscreen ? { height: scale(34), paddingHorizontal: scale(14) } : null]}
                         >
-                          <MaterialCommunityIcons name="server-network" size={scale(16)} color="#38bdf8" style={{ marginRight: scale(6) }} />
-                          <Text style={[styles.vlcFeatureBtnText, { fontSize: moderateScale(12) }]}>{activeServer.displayName}</Text>
+                          <MaterialCommunityIcons name="server-network" size={scale(13)} color="#38bdf8" style={{ marginRight: scale(4) }} />
+                          <Text style={[styles.vlcFeatureBtnText, isFullscreen ? { fontSize: moderateScale(12) } : null]}>{activeServer.displayName}</Text>
                         </TouchableOpacity>
 
                         {/* Playback Speed */}
                         <TouchableOpacity
                           onPress={cyclePlaybackSpeed}
                           activeOpacity={0.8}
-                          style={[styles.vlcFeatureBtn, { width: scale(34), height: scale(34), borderRadius: scale(17) }]}
+                          style={[styles.vlcFeatureBtn, isFullscreen ? { width: scale(34), height: scale(34), borderRadius: scale(17) } : null]}
                         >
-                          <Text style={[styles.vlcSpeedText, { fontSize: moderateScale(12) }]}>{playbackSpeed}x</Text>
+                          <Text style={[styles.vlcSpeedText, isFullscreen ? { fontSize: moderateScale(12) } : null]}>{playbackSpeed}x</Text>
                         </TouchableOpacity>
 
                         {/* Aspect Ratio */}
                         <TouchableOpacity
                           onPress={toggleContentFitMode}
                           activeOpacity={0.8}
-                          style={[styles.vlcFeatureBtn, { width: scale(34), height: scale(34), borderRadius: scale(17) }]}
+                          style={[styles.vlcFeatureBtn, isFullscreen ? { width: scale(34), height: scale(34), borderRadius: scale(17) } : null]}
                         >
                           <MaterialCommunityIcons
                             name={contentFitMode === 'cover' ? 'aspect-ratio' : 'fit-to-screen'}
-                            size={scale(18)}
+                            size={isFullscreen ? scale(18) : scale(15)}
                             color={contentFitMode === 'cover' ? '#38bdf8' : '#ffffff'}
                           />
                         </TouchableOpacity>
@@ -786,24 +934,24 @@ export default function TvSerialsScreen() {
                         <TouchableOpacity
                           onPress={toggleMute}
                           activeOpacity={0.8}
-                          style={[styles.vlcFeatureBtn, { width: scale(34), height: scale(34), borderRadius: scale(17) }]}
+                          style={[styles.vlcFeatureBtn, isFullscreen ? { width: scale(34), height: scale(34), borderRadius: scale(17) } : null]}
                         >
                           <Ionicons
                             name={isMuted ? 'volume-mute' : 'volume-high'}
-                            size={scale(18)}
+                            size={isFullscreen ? scale(18) : scale(15)}
                             color={isMuted ? '#f87171' : '#ffffff'}
                           />
                         </TouchableOpacity>
 
-                        {/* Fullscreen Exit */}
+                        {/* Fullscreen Toggle / Exit */}
                         <TouchableOpacity
                           onPress={toggleFullscreen}
                           activeOpacity={0.8}
-                          style={[styles.vlcFeatureBtn, { width: scale(34), height: scale(34), borderRadius: scale(17) }]}
+                          style={[styles.vlcFeatureBtn, isFullscreen ? { width: scale(34), height: scale(34), borderRadius: scale(17) } : null]}
                         >
                           <MaterialCommunityIcons
-                            name="fullscreen-exit"
-                            size={scale(18)}
+                            name={isFullscreen ? "fullscreen-exit" : "fullscreen"}
+                            size={isFullscreen ? scale(18) : scale(15)}
                             color="#ffffff"
                           />
                         </TouchableOpacity>
@@ -813,388 +961,53 @@ export default function TvSerialsScreen() {
                 )}
               </Pressable>
             </View>
-          </Modal>
-        )}
+          ) : (
+            /* Decryptor Status Circles Hero matching attached image */
+            <LinearGradient
+              colors={['#080b14', '#0d1322', '#090d18']}
+              style={styles.nodesHeroGradient}
+            >
+              <View style={styles.nodesRow}>
+                {/* Node 1: Tamil Server Source */}
+                <View style={styles.nodeItem}>
+                  <View style={styles.nodeCircle}>
+                    <Ionicons name="server-outline" size={scale(22)} color="#94a3b8" />
+                  </View>
+                  <Text style={styles.nodeLabel}>Tamil Server Source</Text>
+                  <Text style={styles.nodeSubLabel}>{activeServer.name}</Text>
+                </View>
 
-        {/* TOP NAVIGATION BAR: BACK TO TV SERIALS HOME */}
-        <View style={styles.detailNavBar}>
-          <TouchableOpacity
-            style={styles.detailBackBtn}
-            onPress={() => {
-              setIsPlaying(false);
-              setIsPlayerActive(false);
-              setIsDetailView(false);
-            }}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={scale(20)} color="#ffffff" />
-            <Text style={styles.detailBackBtnText}>TV Serials Home</Text>
-          </TouchableOpacity>
+                {/* Node 2: Client Decryptor Engine (Prominent center) */}
+                <View style={[styles.nodeItem, { marginTop: verticalScale(14) }]}>
+                  <View style={[styles.nodeCircle, styles.nodeCircleActive]}>
+                    <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+                      <Ionicons name="layers-outline" size={scale(26)} color="#38bdf8" />
+                    </Animated.View>
+                  </View>
+                  <Text style={[styles.nodeLabel, { color: '#ffffff' }]}>Client Decryptor Engine</Text>
+                  <Text style={[styles.nodeSubLabel, { color: '#38bdf8' }]}>Active Decryptor</Text>
+                </View>
 
-          <View style={styles.detailServerBadge}>
-            <View style={[styles.statusDot, { backgroundColor: '#22c55e' }]} />
-            <Text style={styles.detailServerBadgeText}>{activeServer.displayName}</Text>
-          </View>
+                {/* Node 3: Stream Output Sandbox */}
+                <View style={styles.nodeItem}>
+                  <View style={styles.nodeCircle}>
+                    <Ionicons name="videocam-outline" size={scale(22)} color="#94a3b8" />
+                  </View>
+                  <Text style={styles.nodeLabel}>Stream Output Sandbox</Text>
+                  <Text style={styles.nodeSubLabel}>HLS Output</Text>
+                </View>
+              </View>
+            </LinearGradient>
+          )}
         </View>
 
-        <ScrollView
-          style={styles.detailScroll}
-          contentContainerStyle={styles.detailScrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* TOP VIDEO PLAYER AREA: POSITIONED CLEANLY BELOW CAMERA HOLE */}
-          <View style={styles.playerContainer}>
-            {isPlayerActive ? (
-              <View style={styles.playerBox}>
-                <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
-                  <VLCPlayerView
-                    ref={vlcPlayerRef}
-                    source={activeStreamSource}
-                    autoplay={true}
-                    paused={!isPlaying}
-                    muted={isMuted}
-                    rate={playbackSpeed}
-                    resizeMode={contentFitMode === 'cover' ? 'cover' : 'contain'}
-                    style={StyleSheet.absoluteFill}
-                    progressUpdateInterval={500}
-                    showNowPlaying={false}
-                    continueAudioInBackground={false}
-                    onLoadStart={() => {
-                      setIsBuffering(true);
-                    }}
-                    onLoad={(event) => {
-                      setIsBuffering(false);
-                      if (event?.duration && event.duration > 0) {
-                        setPlaybackDuration(event.duration / 1000);
-                      }
-                    }}
-                    onProgress={(event) => {
-                      if (!isScrubbingRef.current) {
-                        setPlaybackTime(event.currentTime / 1000);
-                        if (event.duration > 0) {
-                          setPlaybackDuration(event.duration / 1000);
-                        }
-                      }
-                    }}
-                    onPlaying={() => {
-                      setIsPlaying(true);
-                      setIsBuffering(false);
-                    }}
-                    onPaused={() => {
-                      setIsPlaying(false);
-                    }}
-                    onBuffer={(event) => {
-                      setIsBuffering(Boolean(event?.isBuffering));
-                    }}
-                    onError={(err) => {
-                      console.warn('[VLCPlayer] Playback error:', err);
-                      setIsBuffering(false);
-                    }}
-                    onEnd={() => {
-                      setIsPlaying(false);
-                    }}
-                  />
-
-                  {/* FLOATING CENTERED BUFFERING SPINNER (Displayed when video is buffering and controls are hidden) */}
-                  {isBuffering && !controlsVisible && !isLoadingStream && (
-                    <View pointerEvents="none" style={styles.floatingBufferingContainer}>
-                      <View style={styles.floatingBufferingCircle}>
-                        <ActivityIndicator size="small" color="#38bdf8" />
-                      </View>
-                    </View>
-                  )}
-
-                  {/* LIVE SCRAPER RESOLVING LOADER OVERLAY */}
-                  {isLoadingStream && (
-                    <View style={styles.scraperLoaderOverlay} pointerEvents="auto">
-                      <View style={styles.scraperLoaderCard}>
-                        <ActivityIndicator size="large" color="#38bdf8" />
-                        <View style={styles.scraperQueryBadge}>
-                          <Ionicons name="search" size={scale(13)} color="#38bdf8" style={{ marginRight: scale(5) }} />
-                          <Text style={styles.scraperQueryBadgeText}>
-                            {activeServerId === 'tamilgun' ? 'Server 2 Search' : 'Server 1 Search'}
-                          </Text>
-                        </View>
-                        <Text style={styles.scraperQueryText} numberOfLines={2}>
-                          {activeMetadataQuery || buildMetadataString(selectedSerial, selectedDay, currentCalendarDate, activeServerId)}
-                        </Text>
-                        <Text style={styles.scraperSubText}>
-                          Posting stream with HTTP Referer to VLC Player Engine
-                        </Text>
-                      </View>
-                    </View>
-                  )}
-
-                  {/* CONTROLS OVERLAY (Matching MovieDetailScreen VLC Player UI/UX Layout) */}
-                  {!isLoadingStream && (
-                    <Animated.View
-                      pointerEvents={controlsVisible ? 'box-none' : 'none'}
-                      style={[
-                        StyleSheet.absoluteFill,
-                        styles.vlcControlsOverlay,
-                        { opacity: controlsOpacity }
-                      ]}
-                    >
-                      {/* Top Row: Back button + Title/Date + Server badge + Aspect Ratio + Fullscreen */}
-                      <View style={styles.vlcTopBar}>
-                        <View style={styles.vlcTopLeft}>
-                          <TouchableOpacity
-                            style={styles.vlcCircularBtn}
-                            onPress={() => {
-                              setIsPlaying(false);
-                              setIsPlayerActive(false);
-                            }}
-                            activeOpacity={0.8}
-                          >
-                            <Ionicons name="arrow-back" size={scale(16)} color="#ffffff" />
-                          </TouchableOpacity>
-                          <View style={{ marginLeft: scale(8), flex: 1 }}>
-                            <Text style={styles.vlcTitleText} numberOfLines={1}>
-                              {selectedSerial?.title || 'Tamil Serial'}
-                            </Text>
-                            <Text style={styles.vlcSubtitleText} numberOfLines={1}>
-                              {selectedDay} {monthName} {year} • {activeServer.displayName}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <View style={styles.vlcTopRight}>
-                          {/* Quick Server Switcher Badge Pill */}
-                          <TouchableOpacity
-                            style={styles.vlcServerBadgePill}
-                            onPress={togglePlayerServer}
-                            activeOpacity={0.8}
-                          >
-                            <View style={styles.vlcServerDot} />
-                            <Text style={styles.vlcServerBadgeText}>
-                              {activeServer.shortName}
-                            </Text>
-                          </TouchableOpacity>
-
-                          {/* Aspect Ratio Mode */}
-                          <TouchableOpacity
-                            style={styles.vlcCircularBtn}
-                            onPress={toggleContentFitMode}
-                            activeOpacity={0.8}
-                          >
-                            <MaterialCommunityIcons
-                              name={contentFitMode === 'cover' ? 'aspect-ratio' : 'fit-to-screen'}
-                              size={scale(16)}
-                              color={contentFitMode === 'cover' ? '#38bdf8' : '#ffffff'}
-                            />
-                          </TouchableOpacity>
-
-                          {/* Fullscreen Button */}
-                          <TouchableOpacity
-                            style={styles.vlcCircularBtn}
-                            onPress={toggleFullscreen}
-                            activeOpacity={0.8}
-                          >
-                            <MaterialCommunityIcons
-                              name="fullscreen"
-                              size={scale(16)}
-                              color="#ffffff"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      {/* Center Controls: Rewind 10s, Big Play/Pause, Forward 10s */}
-                      <View style={styles.vlcCenterControls}>
-                        <TouchableOpacity
-                          onPress={() => handleSeek(-10)}
-                          activeOpacity={0.75}
-                          style={styles.vlcSkipBtn}
-                        >
-                          <MaterialIcons name="replay-10" size={scale(22)} color="#ffffff" />
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          onPress={() => setIsPlaying(prev => !prev)}
-                          activeOpacity={0.85}
-                          style={styles.vlcPlayPauseBtn}
-                        >
-                          {isBuffering ? (
-                            <ActivityIndicator size="small" color="#0284c7" />
-                          ) : (
-                            <Ionicons
-                              name={isPlaying ? 'pause' : 'play'}
-                              size={scale(26)}
-                              color="#000000"
-                              style={!isPlaying ? { marginLeft: scale(3) } : null}
-                            />
-                          )}
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          onPress={() => handleSeek(10)}
-                          activeOpacity={0.75}
-                          style={styles.vlcSkipBtn}
-                        >
-                          <MaterialIcons name="forward-10" size={scale(22)} color="#ffffff" />
-                        </TouchableOpacity>
-                      </View>
-
-                      {/* Bottom Row: Scrubber, Timestamps & Feature Toolbar */}
-                      <View style={styles.vlcBottomContainer}>
-                        {/* Scrubber Progress Bar */}
-                        <View
-                          style={styles.vlcScrubberTouchArea}
-                          onLayout={(e) => {
-                            const w = e.nativeEvent.layout.width;
-                            scrubberWidthRef.current = w;
-                            setScrubberWidth(w);
-                          }}
-                          {...scrubberPanResponder.panHandlers}
-                        >
-                          <View pointerEvents="none" style={styles.vlcScrubberTrack}>
-                            <View
-                              pointerEvents="none"
-                              style={[
-                                styles.vlcScrubberFill,
-                                { width: `${playbackDuration > 0 ? Math.min(100, Math.max(0, (playbackTime / playbackDuration) * 100)) : 0}%` }
-                              ]}
-                            />
-                            <View
-                              pointerEvents="none"
-                              style={[
-                                styles.vlcScrubberThumb,
-                                { left: `${playbackDuration > 0 ? Math.min(100, Math.max(0, (playbackTime / playbackDuration) * 100)) : 0}%` }
-                              ]}
-                            />
-                          </View>
-                        </View>
-
-                        {/* Timestamps */}
-                        <View style={styles.vlcTimestampsRow}>
-                          <Text style={styles.vlcTimeTextLeft}>{formatTime(playbackTime)}</Text>
-                          <Text style={styles.vlcTimeTextRight}>{playbackDuration > 0 ? formatTime(playbackDuration) : '--:--'}</Text>
-                        </View>
-
-                        {/* Features Row */}
-                        <View style={styles.vlcFeaturesRow}>
-                          {/* Server Switcher Pill */}
-                          <TouchableOpacity
-                            onPress={togglePlayerServer}
-                            activeOpacity={0.8}
-                            style={styles.vlcFeatureBtnPill}
-                          >
-                            <MaterialCommunityIcons name="server-network" size={scale(13)} color="#38bdf8" style={{ marginRight: scale(4) }} />
-                            <Text style={styles.vlcFeatureBtnText}>{activeServer.shortName}</Text>
-                          </TouchableOpacity>
-
-                          {/* Playback Speed */}
-                          <TouchableOpacity
-                            onPress={cyclePlaybackSpeed}
-                            activeOpacity={0.8}
-                            style={styles.vlcFeatureBtn}
-                          >
-                            <Text style={styles.vlcSpeedText}>{playbackSpeed}x</Text>
-                          </TouchableOpacity>
-
-                          {/* Aspect Ratio */}
-                          <TouchableOpacity
-                            onPress={toggleContentFitMode}
-                            activeOpacity={0.8}
-                            style={styles.vlcFeatureBtn}
-                          >
-                            <MaterialCommunityIcons
-                              name={contentFitMode === 'cover' ? 'aspect-ratio' : 'fit-to-screen'}
-                              size={scale(15)}
-                              color={contentFitMode === 'cover' ? '#38bdf8' : '#ffffff'}
-                            />
-                          </TouchableOpacity>
-
-                          {/* Audio Mute */}
-                          <TouchableOpacity
-                            onPress={toggleMute}
-                            activeOpacity={0.8}
-                            style={styles.vlcFeatureBtn}
-                          >
-                            <Ionicons
-                              name={isMuted ? 'volume-mute' : 'volume-high'}
-                              size={scale(15)}
-                              color={isMuted ? '#f87171' : '#ffffff'}
-                            />
-                          </TouchableOpacity>
-
-                          {/* Fullscreen */}
-                          <TouchableOpacity
-                            onPress={toggleFullscreen}
-                            activeOpacity={0.8}
-                            style={styles.vlcFeatureBtn}
-                          >
-                            <MaterialCommunityIcons
-                              name="fullscreen"
-                              size={scale(15)}
-                              color="#ffffff"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    </Animated.View>
-                  )}
-                </Pressable>
-              </View>
-            ) : (
-              /* Decryptor Status Circles Hero matching attached image */
-              <LinearGradient
-                colors={['#080b14', '#0d1322', '#090d18']}
-                style={styles.nodesHeroGradient}
-              >
-                <View style={styles.nodesRow}>
-                  {/* Node 1: Tamil Server Source */}
-                  <View style={styles.nodeItem}>
-                    <View style={styles.nodeCircle}>
-                      <Ionicons name="server-outline" size={scale(22)} color="#94a3b8" />
-                    </View>
-                    <Text style={styles.nodeLabel}>Tamil Server Source</Text>
-                    <Text style={styles.nodeSubLabel}>{activeServer.name}</Text>
-                  </View>
-
-                  {/* Node 2: Client Decryptor Engine (Prominent center) */}
-                  <View style={[styles.nodeItem, { marginTop: verticalScale(14) }]}>
-                    <View style={[styles.nodeCircle, styles.nodeCircleActive]}>
-                      <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                        <Ionicons name="layers-outline" size={scale(26)} color="#38bdf8" />
-                      </Animated.View>
-                    </View>
-                    <Text style={[styles.nodeLabel, { color: '#ffffff' }]}>Client Decryptor Engine</Text>
-                    <Text style={[styles.nodeSubLabel, { color: '#38bdf8' }]}>Active Decryptor</Text>
-                  </View>
-
-                  {/* Node 3: Stream Output Sandbox */}
-                  <View style={styles.nodeItem}>
-                    <View style={styles.nodeCircle}>
-                      <Ionicons name="videocam-outline" size={scale(22)} color="#94a3b8" />
-                    </View>
-                    <Text style={styles.nodeLabel}>Stream Output Sandbox</Text>
-                    <Text style={styles.nodeSubLabel}>HLS Output</Text>
-                  </View>
-                </View>
-              </LinearGradient>
-            )}
-          </View>
-
-          {/* Metrics Status Bar */}
-          <View style={styles.metricsBar}>
-            <View style={styles.metricCol}>
-              <Text style={styles.metricLabel}>Target Channel</Text>
-              <Text style={styles.metricValue}>{selectedSerial?.channel || 'Sun TV'}</Text>
-            </View>
-
-            <View style={styles.metricCol}>
-              <Text style={styles.metricLabel}>Index Latency</Text>
-              <Text style={styles.metricValue}>{activeServer.latency}</Text>
-            </View>
-
-            <View style={styles.metricCol}>
-              <Text style={styles.metricLabel}>Payload Protocol</Text>
-              <Text style={[styles.metricValue, { color: '#16a34a' }]}>
-                {activeServer.protocol}
-              </Text>
-            </View>
-          </View>
+        {/* LOWER SCROLLABLE UI (Step 1, 2, 3) - Only rendered when not in fullscreen */}
+        {!isFullscreen && (
+          <ScrollView
+            style={styles.detailScroll}
+            contentContainerStyle={styles.detailScrollContent}
+            showsVerticalScrollIndicator={false}
+          >
 
           {/* Active Scraper Metadata Query Bar matching user format: Title | DD-MM-YYYY | Channel Serial */}
           <View style={styles.metadataQueryBanner}>
@@ -1357,6 +1170,7 @@ export default function TvSerialsScreen() {
             </View>
           </View>
         </ScrollView>
+        )}
 
         {/* MODAL DROPDOWN: ALL SERIAL NAMES */}
         <Modal
@@ -1894,6 +1708,25 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'space-between',
   },
+  fullscreenPlayerWrapper: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+    zIndex: 99999,
+    elevation: 99999,
+  },
+  fullscreenPlayerBox: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+    position: 'relative',
+    justifyContent: 'space-between',
+  },
   loaderOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
@@ -2238,32 +2071,6 @@ const styles = StyleSheet.create({
     marginTop: verticalScale(2),
   },
 
-  // Metrics Bar
-  metricsBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    paddingVertical: verticalScale(14),
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-    elevation: 1,
-  },
-  metricCol: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  metricLabel: {
-    color: '#6b7280',
-    fontSize: moderateScale(11),
-    fontWeight: '500',
-    marginBottom: verticalScale(2),
-  },
-  metricValue: {
-    color: '#111827',
-    fontSize: moderateScale(13.5),
-    fontWeight: '800',
-  },
 
   // Steps Container
   stepsContainer: {
