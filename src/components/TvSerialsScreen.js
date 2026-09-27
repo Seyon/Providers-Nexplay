@@ -673,8 +673,8 @@ export default function TvSerialsScreen() {
                   </View>
                 </View>
               ) : (
-                activeStreamSource ? (
-                  <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
+                <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
+                  {activeStreamSource ? (
                     <VLCPlayerView
                       key={`${activeServerId}_${currentStreamUrl || 'default'}`}
                       ref={vlcPlayerRef}
@@ -748,18 +748,16 @@ export default function TvSerialsScreen() {
                         setIsPlaying(false);
                       }}
                     />
+                  ) : null}
 
-                    {/* Floating Centered Buffering Spinner */}
-                    {isBuffering && !controlsVisible && !isLoadingStream && (
-                      <View pointerEvents="none" style={styles.floatingBufferingContainer}>
-                        <View style={styles.floatingBufferingCircle}>
-                          <ActivityIndicator size={isFullscreen ? 'large' : 'small'} color="#38bdf8" />
-                        </View>
+                  {/* Floating Centered Buffering Spinner */}
+                  {isBuffering && !controlsVisible && !isLoadingStream && (
+                    <View pointerEvents="none" style={styles.floatingBufferingContainer}>
+                      <View style={styles.floatingBufferingCircle}>
+                        <ActivityIndicator size={isFullscreen ? 'large' : 'small'} color="#38bdf8" />
                       </View>
-                    )}
-                  </Pressable>
-                ) : null
-              )}
+                    </View>
+                  )}
 
                 {/* Live Scraper Resolving Loader Overlay */}
                 {isLoadingStream && (
@@ -1000,6 +998,7 @@ export default function TvSerialsScreen() {
                   </Animated.View>
                 )}
               </Pressable>
+              )}
             </View>
           ) : (
             /* Decryptor Status Circles Hero matching attached image */
