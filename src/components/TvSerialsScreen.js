@@ -189,9 +189,15 @@ export default function TvSerialsScreen() {
     ).start();
   }, [pulseAnim]);
 
-  // Highlights for the Hero Carousel (Fixed 5 major shows)
+  // Highlights for the Hero Carousel (Curated 5 flagship shows across Sun TV, Vijay TV, Zee Tamil)
   const heroHighlights = useMemo(() => {
-    return allServerSerials.slice(0, 5);
+    const flagshipCodes = ['kayal', 'singapennae', 'siragadikka_aasai', 'pandian_stores_2', 'karthigai_deepam'];
+    const curated = [];
+    for (const code of flagshipCodes) {
+      const found = allServerSerials.find(s => s.serialCode === code);
+      if (found) curated.push(found);
+    }
+    return curated.length >= 5 ? curated : allServerSerials.slice(0, 5);
   }, [allServerSerials]);
 
   // Live Scraper Status
@@ -531,7 +537,7 @@ export default function TvSerialsScreen() {
       ':no-stats'
     ];
 
-    const ref = currentStreamReferer || currentStreamHeaders?.Referer || currentStreamHeaders?.referer;
+    const ref = currentStreamReferer || currentStreamHeaders?.Referer || currentStreamHeaders?.referer || (activeServerId === 'tamildhool' ? 'https://tamildhool.tech/' : '');
     if (ref && !playUri.includes('mux.dev') && !playUri.includes('commondatastorage')) {
       initOptions.push(`--http-referrer=${ref}`);
       mediaOptions.push(`:http-referrer=${ref}`);
@@ -1272,14 +1278,22 @@ export default function TvSerialsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. TOP HERO BANNER (CONSTANT FIXED SIZE, NO SHIFTING ON ROTATION, NO STAR RATINGS) */}
+        {/* 1. TOP HERO BANNER (INCREASED HEIGHT TO ADOPT POSTER IMAGE, RICH DESIGN) */}
         <View style={styles.heroOuterWrapper}>
-          <LinearGradient
-            colors={['#070a13', '#0b1222', '#0f172a']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
+          <ImageBackground
+            source={{ uri: currentHero.image }}
             style={styles.heroCard}
+            imageStyle={styles.heroCardImage}
+            resizeMode="cover"
           >
+            {/* Dark & Glass Gradient Overlays to adopt image beautifully */}
+            <LinearGradient
+              colors={['rgba(6, 10, 20, 0.45)', 'rgba(6, 10, 20, 0.78)', '#060a14']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0.6, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            />
+
             {/* Top Row: Pill Tag + Pause/Play Button */}
             <View style={styles.heroHeaderRow}>
               <View style={styles.networkBadgePill}>
@@ -1300,7 +1314,7 @@ export default function TvSerialsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Hero Main Content Row: Constant fixed layout, description & time removed */}
+            {/* Hero Main Content Row */}
             <View style={styles.heroMainRow}>
               <View style={styles.heroInfoColumn}>
                 <Text style={styles.heroTitle} numberOfLines={1}>
@@ -1309,6 +1323,17 @@ export default function TvSerialsScreen() {
                 <Text style={styles.heroTamilTitle} numberOfLines={1}>
                   {currentHero.tamilTitle}
                 </Text>
+
+                {/* Meta details: timeSlot & tag */}
+                <View style={styles.heroMetaRow}>
+                  <View style={styles.heroTimeSlotBadge}>
+                    <Ionicons name="time-outline" size={scale(11)} color="#94a3b8" style={{ marginRight: scale(4) }} />
+                    <Text style={styles.heroTimeSlotText}>{currentHero.timeSlot || '08:00 PM'}</Text>
+                  </View>
+                  <View style={styles.heroTagBadge}>
+                    <Text style={styles.heroTagBadgeText}>{currentHero.tag || 'Daily Soap'}</Text>
+                  </View>
+                </View>
 
                 {/* Action Button: Quick Play */}
                 <View style={styles.heroActionsRow}>
@@ -1323,13 +1348,18 @@ export default function TvSerialsScreen() {
                 </View>
               </View>
 
-              {/* Glass Live Broadcast Box */}
-              <View style={styles.liveBroadcastContainer}>
-                <View style={styles.liveBroadcastGlassCard}>
-                  <Ionicons name="tv-outline" size={scale(24)} color="#eab308" />
-                  <Text style={styles.liveBroadcastTitle}>LIVE</Text>
-                  <Text style={styles.liveBroadcastSubtitle}>BROADCAST</Text>
-                  <Animated.View style={[styles.liveStatusDot, { opacity: pulseAnim }]} />
+              {/* Poster Preview Card on the Right (Adopts image with glowing glass frame) */}
+              <View style={styles.heroPosterCardContainer}>
+                <View style={styles.heroPosterCardFrame}>
+                  <Image
+                    source={{ uri: currentHero.image }}
+                    style={styles.heroPosterCardImage}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.heroLiveBadge}>
+                    <Animated.View style={[styles.liveStatusDot, { opacity: pulseAnim }]} />
+                    <Text style={styles.heroLiveBadgeText}>HD</Text>
+                  </View>
                 </View>
               </View>
             </View>
@@ -1351,7 +1381,7 @@ export default function TvSerialsScreen() {
                 );
               })}
             </View>
-          </LinearGradient>
+          </ImageBackground>
         </View>
 
         {/* 2. PRIMARY BROADCASTERS / சேனல்கள் (KTV REMOVED, OFFICIAL LOGOS) */}
@@ -2342,23 +2372,29 @@ const styles = StyleSheet.create({
     backgroundColor: '#060912',
   },
   heroCard: {
-    height: verticalScale(140), // CONSTANT FIXED HEIGHT (Prevents border sizing jumps)
-    minHeight: verticalScale(140),
-    maxHeight: verticalScale(140),
+    height: verticalScale(215), // INCREASED HEIGHT TO ADOPT POSTER IMAGE
+    minHeight: verticalScale(215),
+    maxHeight: verticalScale(215),
     borderRadius: scale(18),
     paddingHorizontal: scale(16),
-    paddingTop: verticalScale(10),
-    paddingBottom: verticalScale(10),
+    paddingTop: verticalScale(12),
+    paddingBottom: verticalScale(12),
     borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     overflow: 'hidden',
     justifyContent: 'space-between',
+    backgroundColor: '#0b1222',
+  },
+  heroCardImage: {
+    borderRadius: scale(18),
+    opacity: 0.85,
   },
   heroHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     height: verticalScale(30),
+    zIndex: 2,
   },
   networkBadgePill: {
     flexDirection: 'row',
@@ -2378,9 +2414,9 @@ const styles = StyleSheet.create({
     width: scale(30),
     height: scale(30),
     borderRadius: scale(15),
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2389,24 +2425,60 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     flex: 1,
+    zIndex: 2,
   },
   heroInfoColumn: {
     flex: 1,
-    paddingRight: scale(10),
+    paddingRight: scale(12),
     justifyContent: 'center',
   },
   heroTitle: {
     color: '#ffffff',
-    fontSize: moderateScale(18),
+    fontSize: moderateScale(19),
     fontWeight: '900',
     letterSpacing: -0.3,
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   heroTamilTitle: {
     color: '#f59e0b',
-    fontSize: moderateScale(13.5),
+    fontSize: moderateScale(14),
     fontWeight: '800',
     marginTop: verticalScale(1),
-    marginBottom: verticalScale(6),
+    marginBottom: verticalScale(4),
+  },
+  heroMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: verticalScale(8),
+    gap: scale(8),
+  },
+  heroTimeSlotBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingVertical: verticalScale(3),
+    paddingHorizontal: scale(8),
+    borderRadius: scale(10),
+  },
+  heroTimeSlotText: {
+    color: '#e2e8f0',
+    fontSize: moderateScale(10.5),
+    fontWeight: '700',
+  },
+  heroTagBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.18)',
+    paddingVertical: verticalScale(3),
+    paddingHorizontal: scale(8),
+    borderRadius: scale(10),
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  heroTagBadgeText: {
+    color: '#38bdf8',
+    fontSize: moderateScale(10),
+    fontWeight: '800',
   },
   heroActionsRow: {
     flexDirection: 'row',
@@ -2416,69 +2488,70 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#2563eb',
-    paddingVertical: verticalScale(6),
-    paddingHorizontal: scale(14),
+    paddingVertical: verticalScale(6.5),
+    paddingHorizontal: scale(15),
     borderRadius: scale(20),
     marginRight: scale(10),
-    elevation: 3,
+    elevation: 4,
+    shadowColor: '#2563eb',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
   },
   quickPlayText: {
     color: '#ffffff',
     fontSize: moderateScale(11.5),
     fontWeight: '800',
   },
-  heroTimeSlotBadge: {
+  heroPosterCardContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heroPosterCardFrame: {
+    width: scale(96),
+    height: verticalScale(126),
+    borderRadius: scale(14),
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: '#0f172a',
+    elevation: 8,
+    position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  heroPosterCardImage: {
+    width: '100%',
+    height: '100%',
+  },
+  heroLiveBadge: {
+    position: 'absolute',
+    top: scale(6),
+    right: scale(6),
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: verticalScale(4),
-    paddingHorizontal: scale(8),
-    borderRadius: scale(12),
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    paddingVertical: verticalScale(2),
+    paddingHorizontal: scale(6),
+    borderRadius: scale(8),
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
-  heroTimeSlotText: {
-    color: '#cbd5e1',
-    fontSize: moderateScale(11),
-    fontWeight: '700',
-  },
-  liveBroadcastContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingLeft: scale(4),
-  },
-  liveBroadcastGlassCard: {
-    width: scale(82),
-    height: scale(82),
-    borderRadius: scale(14),
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    transform: [{ rotate: '8deg' }],
-    position: 'relative',
-  },
-  liveBroadcastTitle: {
-    color: '#94a3b8',
-    fontSize: moderateScale(8),
-    fontWeight: '800',
-    letterSpacing: 0.8,
-    marginTop: verticalScale(2),
-  },
-  liveBroadcastSubtitle: {
-    color: '#64748b',
-    fontSize: moderateScale(6.5),
-    fontWeight: '700',
-    letterSpacing: 0.6,
+  heroLiveBadgeText: {
+    color: '#22c55e',
+    fontSize: moderateScale(8.5),
+    fontWeight: '900',
+    marginLeft: scale(3),
   },
   liveStatusDot: {
-    position: 'absolute',
-    bottom: scale(5),
-    right: scale(5),
-    width: scale(7),
-    height: scale(7),
-    borderRadius: scale(3.5),
+    width: scale(6.5),
+    height: scale(6.5),
+    borderRadius: scale(3.25),
     backgroundColor: '#22c55e',
   },
+
   paginationRow: {
     flexDirection: 'row',
     alignItems: 'center',
