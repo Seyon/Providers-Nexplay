@@ -376,9 +376,7 @@ export default function TvSerialsScreen() {
         setCurrentStreamHeaders(res.headers || {});
         setCurrentStreamReferer(res.referer || res.headers?.Referer || res.headers?.referer || '');
         setScrapedServerName(res.server || serverLabel);
-        if (res.matchedTitle) {
-          setActiveMetadataDisplay(res.matchedTitle);
-        }
+        setActiveMetadataDisplay(metadata);
       } else {
         setCurrentStreamUrl(targetSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
         setCurrentStreamHeaders({});
@@ -1205,7 +1203,7 @@ export default function TvSerialsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.metadataQueryLabel}>Server Scraper Metadata Query</Text>
                 <Text style={styles.metadataQueryValue} numberOfLines={1}>
-                  {activeMetadataDisplay || buildMetadataString(selectedSerial, selectedDay, currentCalendarDate)}
+                  {buildMetadataString(selectedSerial, selectedDay, currentCalendarDate, activeServerId)}
                 </Text>
               </View>
             </View>
