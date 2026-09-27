@@ -1,4 +1,4 @@
-﻿# build_app.ps1
+# build_app.ps1
 # Automated NexPlay Build & Multi-Architecture Compiler
 # Compiles 3 APKs: Universal, 32-bit (armeabi-v7a), and 64-bit (arm64-v8a)
 # Auto-updates lengthy version format on successful builds based on update type (bug, issue, minor, major, build)
@@ -172,13 +172,13 @@ try {
     }
 
     foreach ($devLine in $deviceLines) {
-        $devId = ($devLine -split '\s+')[0].Trim()
+        $devId = ($devLine -split '\tdevice')[0].Trim()
         Write-Host "Connected Device Found: $devId" -ForegroundColor Green
 
         # Check device CPU ABI
-        $devAbi = (adb -s $devId shell getprop ro.product.cpu.abi).Trim()
-        $devModel = (adb -s $devId shell getprop ro.product.model).Trim()
-        $androidVer = (adb -s $devId shell getprop ro.build.version.release).Trim()
+        $devAbi = (adb -s "$devId" shell getprop ro.product.cpu.abi).Trim()
+        $devModel = (adb -s "$devId" shell getprop ro.product.model).Trim()
+        $androidVer = (adb -s "$devId" shell getprop ro.build.version.release).Trim()
         Write-Host "Device Details: $devModel (Android $androidVer, Primary ABI: $devAbi)" -ForegroundColor Cyan
 
         # Select matching APK
@@ -196,12 +196,12 @@ try {
 
         if ($targetApk) {
             Write-Host "Installing $targetApk to $devId over Wireless Debugging..." -ForegroundColor Cyan
-            $installResult = adb -s $devId install -r -d $targetApk
+            $installResult = adb -s "$devId" install -r -d "$targetApk"
             Write-Host "Install Result: $installResult" -ForegroundColor Green
 
             if (-not $NoLaunch) {
                 Write-Host "Launching NexPlay ($stagedVersionName) on device..." -ForegroundColor Cyan
-                adb -s $devId shell am start -n com.anonymous.Stitchnexplay/.MainActivity
+                adb -s "$devId" shell am start -n com.anonymous.Stitchnexplay/.MainActivity
                 Write-Host "o. NexPlay launched successfully!" -ForegroundColor Green
             }
         }
