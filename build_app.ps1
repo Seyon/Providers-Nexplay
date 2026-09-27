@@ -30,6 +30,10 @@ if (Test-Path "$currentDir\android\gradlew.bat") {
     exit 1
 }
 
+if (-not $env:ANDROID_HOME) {
+    $env:ANDROID_HOME = "C:\Users\Ajo\AppData\Local\Android\Sdk"
+}
+
 $providersPath = "C:\Users\Ajo\Desktop\Android Projects\Providers-Nexplay"
 
 Write-Host "===============================================================" -ForegroundColor Cyan
