@@ -29,7 +29,10 @@ import {
   getCachedSerialsForServer,
   findSerial
 } from '../utils/TvSerialsMetadataCache';
-import { scrapeLiveCatalogFromServers } from '../utils/TvSerialsLiveScraper';
+import {
+  scrapeLiveCatalogFromServers,
+  scrapeEpisodeStreamWithMetadata
+} from '../utils/TvSerialsLiveScraper';
 
 const { width: windowWidth } = Dimensions.get('window');
 
@@ -86,11 +89,20 @@ export default function TvSerialsScreen() {
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Step 3: Calendar Date Picker State
-  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date(2026, 8, 25)); // Sep 25, 2026
-  const [selectedDay, setSelectedDay] = useState(25);
+  // Step 3: Calendar Date Picker State (Defaults to 26-09-2026)
+  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date(2026, 8, 26)); // Sep 26, 2026
+  const [selectedDay, setSelectedDay] = useState(26);
 
-  // In-Screen VLC Player State (Positioned cleanly below camera hole)
+  // Live Scraped Stream & Referer State for VLC Player Engine
+  const [currentStreamUrl, setCurrentStreamUrl] = useState('');
+  const [currentStreamHeaders, setCurrentStreamHeaders] = useState(null);
+  const [currentStreamReferer, setCurrentStreamReferer] = useState('');
+  const [activeMetadataQuery, setActiveMetadataQuery] = useState('');
+  const [activeMetadataDisplay, setActiveMetadataDisplay] = useState('');
+  const [scrapedServerName, setScrapedServerName] = useState('');
+  const [scraperLoadingMessage, setScraperLoadingMessage] = useState('');
+
+  // In-Screen VLC Player State (Strictly using existing VLC Player engine)
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPlayerActive, setIsPlayerActive] = useState(false);
   const [isLoadingStream, setIsLoadingStream] = useState(false);
@@ -157,12 +169,11 @@ export default function TvSerialsScreen() {
 
   const currentHero = heroHighlights[heroIndex % heroHighlights.length] || allServerSerials[0];
 
-  // Open Individual Detailed Serial Screen for a clicked serial
+  // Open Individual Detailed Serial Screen and immediately trigger server scraper
   const handleOpenDetailScreen = (item) => {
     setSelectedSerial(item);
-    setIsPlayerActive(false);
-    setIsPlaying(false);
     setIsDetailView(true);
+    executeScrapeAndPlay(item, selectedDay, activeServerId, currentCalendarDate);
   };
 
   // Calendar Helpers for Step 3
@@ -210,16 +221,67 @@ export default function TvSerialsScreen() {
     );
   }, [allSelectableItems, searchQuery]);
 
-  // Handle Play Episode directly inside TV Serials (No jump to Movie Details!)
-  const handlePlayEpisode = (dayNum = selectedDay) => {
-    setSelectedDay(dayNum);
+  /**
+   * Formats metadata query strictly as: "{Title} | {DD-MM-YYYY} | {Channel} Serial"
+   * e.g. "Kayal | 26-09-2026 | Sun Tv Serial"
+   */
+  const buildMetadataString = (serial, dayNum = selectedDay, calDate = currentCalendarDate) => {
+    if (!serial) return '';
+    const d = String(dayNum).padStart(2, '0');
+    const m = String(calDate.getMonth() + 1).padStart(2, '0');
+    const y = calDate.getFullYear();
+    const dateFormatted = `${d}-${m}-${y}`;
+    const channelName = (serial.channel || 'Sun TV').trim();
+    return `${serial.title} | ${dateFormatted} | ${channelName} Serial`;
+  };
+
+  /**
+   * Execute live server scraper with formatted metadata and post stream + referer to VLC Player
+   */
+  const executeScrapeAndPlay = async (targetSerial = selectedSerial, dayNum = selectedDay, serverId = activeServerId, calDate = currentCalendarDate) => {
+    if (!targetSerial) return;
+    const d = String(dayNum).padStart(2, '0');
+    const m = String(calDate.getMonth() + 1).padStart(2, '0');
+    const y = calDate.getFullYear();
+    const dateStr = `${d}-${m}-${y}`;
+    const metadata = buildMetadataString(targetSerial, dayNum, calDate);
+
+    setActiveMetadataQuery(metadata);
+    setActiveMetadataDisplay(metadata);
     setIsLoadingStream(true);
     setIsPlayerActive(true);
     setIsPlaying(true);
+    const serverLabel = serverId === 'tamilgun' ? 'Server 2 (Tamilgun)' : 'Server 1 (Tamildhool)';
+    setScraperLoadingMessage(`Querying ${serverLabel} for:\n${metadata}`);
 
-    setTimeout(() => {
+    try {
+      const res = await scrapeEpisodeStreamWithMetadata(metadata, targetSerial, dateStr, serverId);
+      if (res && res.streamUrl) {
+        setCurrentStreamUrl(res.streamUrl);
+        setCurrentStreamHeaders(res.headers || {});
+        setCurrentStreamReferer(res.referer || res.headers?.Referer || res.headers?.referer || '');
+        setScrapedServerName(res.server || serverLabel);
+        if (res.matchedTitle) {
+          setActiveMetadataDisplay(res.matchedTitle);
+        }
+      } else {
+        setCurrentStreamUrl(targetSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+        setCurrentStreamHeaders({});
+        setCurrentStreamReferer('');
+        setScrapedServerName('Standard Stream');
+      }
+    } catch (err) {
+      console.warn('[TvSerialsScreen] Live scraper error:', err?.message || err);
+      setCurrentStreamUrl(targetSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+    } finally {
       setIsLoadingStream(false);
-    }, 600);
+    }
+  };
+
+  // Handle Play Episode directly inside TV Serials (No jump to Movie Details!)
+  const handlePlayEpisode = (dayNum = selectedDay) => {
+    setSelectedDay(dayNum);
+    executeScrapeAndPlay(selectedSerial, dayNum, activeServerId, currentCalendarDate);
   };
 
   // Fullscreen toggle handler
@@ -248,36 +310,83 @@ export default function TvSerialsScreen() {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Active Stream Source
+  // Active Stream Source strictly configured for existing VLCPlayerView
   const activeStreamSource = useMemo(() => {
-    if (!selectedSerial) return null;
+    const playUri = currentStreamUrl || selectedSerial?.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+    const initOptions = [
+      '--network-caching=2000',
+      '--live-caching=2000',
+      '--drop-late-frames',
+      '--skip-frames'
+    ];
+
+    const ref = currentStreamReferer || currentStreamHeaders?.Referer || currentStreamHeaders?.referer;
+    if (ref) {
+      initOptions.push(`--http-referrer=${ref}`);
+    }
+    const ua = currentStreamHeaders?.['User-Agent'] || currentStreamHeaders?.['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    if (ua) {
+      initOptions.push(`--http-user-agent=${ua}`);
+    }
+
     return {
-      uri: selectedSerial.streamUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      initOptions: [
-        '--network-caching=1500',
-        '--live-caching=1500',
-        '--drop-late-frames',
-        '--skip-frames'
-      ]
+      uri: playUri,
+      initOptions
     };
-  }, [selectedSerial, activeServerId, selectedDay]);
+  }, [currentStreamUrl, currentStreamReferer, currentStreamHeaders, selectedSerial]);
 
-  // Serials for Home Page filtered by Channel
-  const homeFilteredSerials = homeChannelFilter === 'all'
-    ? allServerSerials
-    : allServerSerials.filter(s => s.channelCode === homeChannelFilter);
+  // Serials for Home Page strictly deduplicated for Index Catalog (No duplicate Kayal or any serial)
+  const homeFilteredSerials = useMemo(() => {
+    const list = homeChannelFilter === 'all'
+      ? allServerSerials
+      : allServerSerials.filter(s => s.channelCode === homeChannelFilter);
+    const seen = new Set();
+    return list.filter(item => {
+      const key = (item.title || item.serialCode || '').toLowerCase().trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [homeChannelFilter, allServerSerials]);
 
-  const homeFilteredReality = homeChannelFilter === 'all'
-    ? REALITY_SHOWS_CACHE
-    : REALITY_SHOWS_CACHE.filter(r => r.channelCode === homeChannelFilter);
+  const homeFilteredReality = useMemo(() => {
+    const list = homeChannelFilter === 'all'
+      ? REALITY_SHOWS_CACHE
+      : REALITY_SHOWS_CACHE.filter(r => r.channelCode === homeChannelFilter);
+    const seen = new Set();
+    return list.filter(item => {
+      const key = (item.title || item.serialCode || '').toLowerCase().trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [homeChannelFilter]);
 
-  const homeFilteredProgrammes = homeChannelFilter === 'all'
-    ? TV_PROGRAMMES_CACHE
-    : TV_PROGRAMMES_CACHE.filter(p => p.channelCode === homeChannelFilter);
+  const homeFilteredProgrammes = useMemo(() => {
+    const list = homeChannelFilter === 'all'
+      ? TV_PROGRAMMES_CACHE
+      : TV_PROGRAMMES_CACHE.filter(p => p.channelCode === homeChannelFilter);
+    const seen = new Set();
+    return list.filter(item => {
+      const key = (item.title || item.serialCode || '').toLowerCase().trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [homeChannelFilter]);
 
-  const homeFilteredEvents = homeChannelFilter === 'all'
-    ? SPECIAL_EVENTS_CACHE
-    : SPECIAL_EVENTS_CACHE.filter(e => e.channelCode === homeChannelFilter);
+  const homeFilteredEvents = useMemo(() => {
+    const list = homeChannelFilter === 'all'
+      ? SPECIAL_EVENTS_CACHE
+      : SPECIAL_EVENTS_CACHE.filter(e => e.channelCode === homeChannelFilter);
+    const seen = new Set();
+    return list.filter(item => {
+      const key = (item.title || item.serialCode || '').toLowerCase().trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [homeChannelFilter]);
 
   // ==============================================================
   // VIEW 2: INDIVIDUAL DETAILED SERIAL SCREEN (Step 1, 2, 3 + Player below camera hole)
@@ -403,7 +512,10 @@ export default function TvSerialsScreen() {
                 {isLoadingStream && (
                   <View style={styles.loaderOverlay}>
                     <ActivityIndicator size="large" color="#38bdf8" />
-                    <Text style={styles.loaderText}>Decrypting {activeServer.shortName} Stream...</Text>
+                    <Text style={styles.loaderText}>
+                      {scraperLoadingMessage || `Searching Server: ${activeMetadataQuery || selectedSerial?.title}...`}
+                    </Text>
+                    <Text style={styles.loaderSubText}>Posting stream with HTTP Referer to VLC Player Engine</Text>
                   </View>
                 )}
 
@@ -528,6 +640,23 @@ export default function TvSerialsScreen() {
             </View>
           </View>
 
+          {/* Active Scraper Metadata Query Bar matching user format: Title | DD-MM-YYYY | Channel Serial */}
+          <View style={styles.metadataQueryBanner}>
+            <View style={styles.metadataQueryLeft}>
+              <Ionicons name="pulse" size={scale(16)} color="#38bdf8" style={{ marginRight: scale(6) }} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.metadataQueryLabel}>Server Scraper Metadata Query</Text>
+                <Text style={styles.metadataQueryValue} numberOfLines={1}>
+                  {activeMetadataDisplay || buildMetadataString(selectedSerial, selectedDay, currentCalendarDate)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.metadataEngineBadge}>
+              <Ionicons name="play" size={scale(10)} color="#22c55e" style={{ marginRight: scale(3) }} />
+              <Text style={styles.metadataEngineBadgeText}>VLC Player Engine</Text>
+            </View>
+          </View>
+
           {/* ========================================================== */}
           {/* STEP 1, 2, 3 SECTION                                       */}
           {/* ========================================================== */}
@@ -547,7 +676,10 @@ export default function TvSerialsScreen() {
                         isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive
                       ]}
                       activeOpacity={0.8}
-                      onPress={() => setActiveServerId(srv.id)}
+                      onPress={() => {
+                        setActiveServerId(srv.id);
+                        executeScrapeAndPlay(selectedSerial, selectedDay, srv.id, currentCalendarDate);
+                      }}
                     >
                       <Ionicons
                         name={isSelected ? 'shield-checkmark' : 'server-outline'}
@@ -634,7 +766,10 @@ export default function TvSerialsScreen() {
                           isSelected && styles.gridDayCellActive
                         ]}
                         activeOpacity={0.75}
-                        onPress={() => handlePlayEpisode(item.day)}
+                        onPress={() => {
+                          setSelectedDay(item.day);
+                          executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
+                        }}
                       >
                         <Text
                           style={[
@@ -656,7 +791,7 @@ export default function TvSerialsScreen() {
               <TouchableOpacity
                 style={styles.watchStreamButton}
                 activeOpacity={0.85}
-                onPress={() => handlePlayEpisode(selectedDay)}
+                onPress={() => executeScrapeAndPlay(selectedSerial, selectedDay, activeServerId, currentCalendarDate)}
               >
                 <Ionicons name="play-circle" size={scale(20)} color="#ffffff" style={{ marginRight: scale(8) }} />
                 <Text style={styles.watchStreamButtonText}>
@@ -726,9 +861,7 @@ export default function TvSerialsScreen() {
                         setSelectedSerial(s);
                         setDropdownVisible(false);
                         setSearchQuery('');
-                        if (isPlayerActive) {
-                          handlePlayEpisode(selectedDay);
-                        }
+                        executeScrapeAndPlay(s, selectedDay, activeServerId, currentCalendarDate);
                       }}
                     >
                       <View style={styles.serialOptionLeft}>
@@ -2024,5 +2157,57 @@ const styles = StyleSheet.create({
     fontSize: moderateScale(14),
     fontWeight: '800',
     letterSpacing: -0.2,
+  },
+
+  // Active Server Scraper Metadata Query Bar & VLC Engine Badge
+  metadataQueryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0a0f1d',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(56, 189, 248, 0.25)',
+    paddingVertical: verticalScale(9),
+    paddingHorizontal: scale(14),
+  },
+  metadataQueryLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: scale(8),
+  },
+  metadataQueryLabel: {
+    color: '#94a3b8',
+    fontSize: moderateScale(9),
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  metadataQueryValue: {
+    color: '#38bdf8',
+    fontSize: moderateScale(11.5),
+    fontWeight: '800',
+    marginTop: verticalScale(1),
+  },
+  metadataEngineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.35)',
+    paddingVertical: verticalScale(3),
+    paddingHorizontal: scale(7),
+    borderRadius: scale(6),
+  },
+  metadataEngineBadgeText: {
+    color: '#4ade80',
+    fontSize: moderateScale(9.5),
+    fontWeight: '700',
+  },
+  loaderSubText: {
+    color: '#94a3b8',
+    fontSize: moderateScale(10),
+    fontWeight: '600',
+    marginTop: verticalScale(4),
   },
 });
