@@ -104,6 +104,7 @@ export default function TvSerialsScreen() {
   const [activeMetadataDisplay, setActiveMetadataDisplay] = useState('');
   const [scrapedServerName, setScrapedServerName] = useState('');
   const [scraperLoadingMessage, setScraperLoadingMessage] = useState('');
+  const [playbackError, setPlaybackError] = useState(null);
 
   // In-Screen VLC Player State (Identical UI/UX layout to existing VLC Player in MovieDetailScreen)
   const [isPlaying, setIsPlaying] = useState(false);
@@ -189,37 +190,32 @@ export default function TvSerialsScreen() {
     ).start();
   }, [pulseAnim]);
 
-  // Highlights for the Hero Carousel (Curated 5 flagship shows across Sun TV, Vijay TV, Zee Tamil)
+  // Highlights for the Hero Carousel (Featured Prime Shows: Bigg Boss 10 + Flagships)
   const heroHighlights = useMemo(() => {
+    const biggBossEntry = {
+      id: 'vijay_bigg_boss_10',
+      serialCode: 'bigg_boss_10',
+      title: 'Bigg Boss 10',
+      tamilTitle: 'பிக் பாஸ் 10',
+      channel: 'Star Vijay',
+      channelCode: 'vijay',
+      networkTag: 'VIJAY TV • PRIME',
+      genre: 'Mega Reality',
+      tag: 'Prime Show',
+      image: 'https://www.tamildhool.tech/wp-content/uploads/2026/09/bbtamil.jpg',
+      bgColor: '#1e1b4b',
+      borderColor: '#ef4444',
+      tamilColor: '#ef4444'
+    };
+
     const flagshipCodes = ['kayal', 'singapennae', 'siragadikka_aasai', 'pandian_stores_2', 'karthigai_deepam'];
-    const curated = [];
+    const curated = [biggBossEntry];
     for (const code of flagshipCodes) {
       const found = allServerSerials.find(s => s.serialCode === code);
       if (found) curated.push(found);
     }
-    return curated.length >= 5 ? curated : allServerSerials.slice(0, 5);
+    return curated;
   }, [allServerSerials]);
-
-  // Live Scraper Status
-  const [liveSyncStatus, setLiveSyncStatus] = useState('Live Connected');
-
-  useEffect(() => {
-    let isMounted = true;
-    async function loadLiveCatalog() {
-      try {
-        setLiveSyncStatus('Syncing Live Feeds...');
-        const data = await scrapeLiveCatalogFromServers();
-        if (isMounted && data) {
-          const total = (data.scrapedSerials?.length || 0) + (data.scrapedShows?.length || 0) + (data.scrapedEvents?.length || 0);
-          setLiveSyncStatus(`⚡ Live Synced (${total > 0 ? total : 42} active items)`);
-        }
-      } catch (e) {
-        if (isMounted) setLiveSyncStatus('⚡ Live Feeds Connected');
-      }
-    }
-    loadLiveCatalog();
-    return () => { isMounted = false; };
-  }, []);
 
   // Auto-rotate hero carousel on TV Serials Home Page
   useEffect(() => {
@@ -471,8 +467,9 @@ export default function TvSerialsScreen() {
     setPlaybackTime(0);
     pendingSeekTimeRef.current = null;
     resetControlsTimeout();
-    const serverLabel = serverId === 'tamilgun' ? 'Server 2 (Tamilgun)' : 'Server 1 (Tamildhool)';
+    const serverLabel = serverId === 'tamilgun' ? 'Server 2' : 'Server 1';
     setScraperLoadingMessage(`Querying ${serverLabel} for:\n${metadata}`);
+    setPlaybackError(null);
 
     // Set safety timeout to guarantee buffering clears even if stream stalls
     bufferingTimeoutRef.current = setTimeout(() => {
@@ -488,21 +485,23 @@ export default function TvSerialsScreen() {
         setCurrentStreamReferer(res.referer || res.headers?.Referer || res.headers?.referer || '');
         setScrapedServerName(res.server || serverLabel);
         setActiveMetadataDisplay(metadata);
+        setPlaybackError(null);
       } else {
-        const fallbackStream = (targetSerial.streamUrl && !targetSerial.streamUrl.includes('commondatastorage')) 
-          ? targetSerial.streamUrl 
-          : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-        setCurrentStreamUrl(fallbackStream);
-        setCurrentStreamHeaders({});
+        setCurrentStreamUrl(null);
+        setCurrentStreamHeaders(null);
         setCurrentStreamReferer('');
-        setScrapedServerName('Standard Stream');
+        setIsPlaying(false);
+        setIsBuffering(false);
+        setPlaybackError(`Playback Error: Stream unavailable for ${targetSerial?.title || 'this serial'} on ${serverLabel} for ${dateStr}. Please select another date or switch server.`);
       }
     } catch (err) {
       console.warn('[TvSerialsScreen] Live scraper error:', err?.message || err);
-      const fallbackStream = (targetSerial.streamUrl && !targetSerial.streamUrl.includes('commondatastorage')) 
-        ? targetSerial.streamUrl 
-        : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-      setCurrentStreamUrl(fallbackStream);
+      setCurrentStreamUrl(null);
+      setCurrentStreamHeaders(null);
+      setCurrentStreamReferer('');
+      setIsPlaying(false);
+      setIsBuffering(false);
+      setPlaybackError(`Playback Error: Unable to fetch stream from ${serverLabel} (${err?.message || 'Network error'}). Please try again or switch server.`);
     } finally {
       setIsLoadingStream(false);
     }
@@ -522,7 +521,8 @@ export default function TvSerialsScreen() {
 
   // Active Stream Source strictly configured for existing VLCPlayerView with Hardware Decoding
   const activeStreamSource = useMemo(() => {
-    const playUri = currentStreamUrl || ((selectedSerial?.streamUrl && !selectedSerial.streamUrl.includes('commondatastorage')) ? selectedSerial.streamUrl : 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
+    if (!currentStreamUrl) return null;
+    const playUri = currentStreamUrl;
     const initOptions = [
       '--network-caching=2000',
       '--live-caching=2000',
@@ -538,7 +538,7 @@ export default function TvSerialsScreen() {
     ];
 
     const ref = currentStreamReferer || currentStreamHeaders?.Referer || currentStreamHeaders?.referer || (activeServerId === 'tamildhool' ? 'https://tamildhool.tech/' : '');
-    if (ref && !playUri.includes('mux.dev') && !playUri.includes('commondatastorage')) {
+    if (ref) {
       initOptions.push(`--http-referrer=${ref}`);
       mediaOptions.push(`:http-referrer=${ref}`);
     }
@@ -554,7 +554,7 @@ export default function TvSerialsScreen() {
       mediaOptions,
       initOptions
     };
-  }, [currentStreamUrl, currentStreamReferer, currentStreamHeaders, selectedSerial]);
+  }, [currentStreamUrl, currentStreamReferer, currentStreamHeaders, activeServerId]);
 
   // Serials for Home Page strictly deduplicated for Index Catalog (No duplicate Kayal or any serial)
   const homeFilteredSerials = useMemo(() => {
@@ -644,88 +644,122 @@ export default function TvSerialsScreen() {
         <View style={isFullscreen ? styles.fullscreenPlayerWrapper : styles.playerContainer}>
           {isPlayerActive ? (
             <View style={isFullscreen ? styles.fullscreenPlayerBox : styles.playerBox}>
-              <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
-                <VLCPlayerView
-                  key={`${activeServerId}_${currentStreamUrl || 'default'}`}
-                  ref={vlcPlayerRef}
-                  source={activeStreamSource}
-                  autoplay={true}
-                  paused={!isPlaying}
-                  muted={isMuted}
-                  rate={playbackSpeed}
-                  resizeMode={contentFitMode === 'cover' ? 'cover' : 'contain'}
-                  style={StyleSheet.absoluteFill}
-                  progressUpdateInterval={500}
-                  showNowPlaying={false}
-                  continueAudioInBackground={false}
-                  onLoadStart={() => {
-                    setIsBuffering(true);
-                  }}
-                  onLoad={(event) => {
-                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
-                    setIsBuffering(false);
-                    setIsLoadingStream(false);
-                    if (typeof event?.duration === 'number' && event.duration > 0) {
-                      setPlaybackDuration(event.duration);
-                    }
-                  }}
-                  onProgress={(event) => {
-                    if (!isScrubbingRef.current) {
-                      const cur = event?.currentTime;
-                      if (typeof cur === 'number' && !isNaN(cur)) {
-                        if (pendingSeekTimeRef.current !== null) {
-                          const elapsed = Date.now() - lastSeekTimestampRef.current;
-                          if (Math.abs(cur - pendingSeekTimeRef.current) > 3) {
-                            if (elapsed < 4000) {
-                              return;
-                            }
-                          }
-                          pendingSeekTimeRef.current = null;
-                        }
-                        setPlaybackTime(cur);
-                      }
-                      if (typeof event?.duration === 'number' && event.duration > 0) {
-                        setPlaybackDuration(event.duration);
-                      }
-                    }
-                  }}
-                  onSeek={(event) => {
-                    if (typeof event?.currentTime === 'number' && !isNaN(event.currentTime)) {
-                      setPlaybackTime(event.currentTime);
-                    }
-                    pendingSeekTimeRef.current = null;
-                  }}
-                  onPlaying={() => {
-                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
-                    setIsPlaying(true);
-                    setIsBuffering(false);
-                    setIsLoadingStream(false);
-                  }}
-                  onPaused={() => {
-                    setIsPlaying(false);
-                  }}
-                  onBuffer={(event) => {
-                    setIsBuffering(Boolean(event?.isBuffering));
-                  }}
-                  onError={(err) => {
-                    console.warn('[VLCPlayer] Playback error:', err);
-                    if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
-                    setIsBuffering(false);
-                    setIsLoadingStream(false);
-                  }}
-                  onEnd={() => {
-                    setIsPlaying(false);
-                  }}
-                />
-
-                {/* Floating Centered Buffering Spinner */}
-                {isBuffering && !controlsVisible && !isLoadingStream && (
-                  <View pointerEvents="none" style={styles.floatingBufferingContainer}>
-                    <View style={styles.floatingBufferingCircle}>
-                      <ActivityIndicator size={isFullscreen ? 'large' : 'small'} color="#38bdf8" />
-                    </View>
+              {playbackError && !isLoadingStream ? (
+                <View style={styles.playbackErrorContainer}>
+                  <Ionicons name="alert-circle-outline" size={scale(44)} color="#ef4444" style={{ marginBottom: verticalScale(10) }} />
+                  <Text style={styles.playbackErrorTitle}>Playback Error</Text>
+                  <Text style={styles.playbackErrorMessage}>{playbackError}</Text>
+                  <View style={styles.playbackErrorActions}>
+                    <TouchableOpacity
+                      style={styles.playbackErrorRetryBtn}
+                      activeOpacity={0.8}
+                      delayPressIn={0}
+                      onPress={() => executeScrapeAndPlay(selectedSerial, selectedDay, activeServerId, currentCalendarDate)}
+                    >
+                      <Ionicons name="refresh" size={scale(15)} color="#ffffff" style={{ marginRight: scale(5) }} />
+                      <Text style={styles.playbackErrorBtnText}>Retry</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.playbackErrorSwitchBtn}
+                      activeOpacity={0.8}
+                      delayPressIn={0}
+                      onPress={togglePlayerServer}
+                    >
+                      <Ionicons name="swap-horizontal" size={scale(15)} color="#38bdf8" style={{ marginRight: scale(5) }} />
+                      <Text style={[styles.playbackErrorBtnText, { color: '#38bdf8' }]}>
+                        Switch to {activeServerId === 'tamildhool' ? 'Server 2' : 'Server 1'}
+                      </Text>
+                    </TouchableOpacity>
                   </View>
-                )}
+                </View>
+              ) : (
+                activeStreamSource ? (
+                  <Pressable style={StyleSheet.absoluteFill} onPress={toggleControls}>
+                    <VLCPlayerView
+                      key={`${activeServerId}_${currentStreamUrl || 'default'}`}
+                      ref={vlcPlayerRef}
+                      source={activeStreamSource}
+                      autoplay={true}
+                      paused={!isPlaying}
+                      muted={isMuted}
+                      rate={playbackSpeed}
+                      resizeMode={contentFitMode === 'cover' ? 'cover' : 'contain'}
+                      style={StyleSheet.absoluteFill}
+                      progressUpdateInterval={500}
+                      showNowPlaying={false}
+                      continueAudioInBackground={false}
+                      onLoadStart={() => {
+                        setIsBuffering(true);
+                      }}
+                      onLoad={(event) => {
+                        if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
+                        setIsBuffering(false);
+                        setIsLoadingStream(false);
+                        if (typeof event?.duration === 'number' && event.duration > 0) {
+                          setPlaybackDuration(event.duration);
+                        }
+                      }}
+                      onProgress={(event) => {
+                        if (!isScrubbingRef.current) {
+                          const cur = event?.currentTime;
+                          if (typeof cur === 'number' && !isNaN(cur)) {
+                            if (pendingSeekTimeRef.current !== null) {
+                              const elapsed = Date.now() - lastSeekTimestampRef.current;
+                              if (Math.abs(cur - pendingSeekTimeRef.current) > 3) {
+                                if (elapsed < 4000) {
+                                  return;
+                                }
+                              }
+                              pendingSeekTimeRef.current = null;
+                            }
+                            setPlaybackTime(cur);
+                          }
+                          if (typeof event?.duration === 'number' && event.duration > 0) {
+                            setPlaybackDuration(event.duration);
+                          }
+                        }
+                      }}
+                      onSeek={(event) => {
+                        if (typeof event?.currentTime === 'number' && !isNaN(event.currentTime)) {
+                          setPlaybackTime(event.currentTime);
+                        }
+                        pendingSeekTimeRef.current = null;
+                      }}
+                      onPlaying={() => {
+                        if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
+                        setIsPlaying(true);
+                        setIsBuffering(false);
+                        setIsLoadingStream(false);
+                      }}
+                      onPaused={() => {
+                        setIsPlaying(false);
+                      }}
+                      onBuffer={(event) => {
+                        setIsBuffering(Boolean(event?.isBuffering));
+                      }}
+                      onError={(err) => {
+                        console.warn('[VLCPlayer] Playback error:', err);
+                        if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
+                        setIsBuffering(false);
+                        setIsLoadingStream(false);
+                        setPlaybackError(`Playback Error: Video stream could not be loaded. Try switching to ${activeServerId === 'tamildhool' ? 'Server 2' : 'Server 1'}.`);
+                      }}
+                      onEnd={() => {
+                        setIsPlaying(false);
+                      }}
+                    />
+
+                    {/* Floating Centered Buffering Spinner */}
+                    {isBuffering && !controlsVisible && !isLoadingStream && (
+                      <View pointerEvents="none" style={styles.floatingBufferingContainer}>
+                        <View style={styles.floatingBufferingCircle}>
+                          <ActivityIndicator size={isFullscreen ? 'large' : 'small'} color="#38bdf8" />
+                        </View>
+                      </View>
+                    )}
+                  </Pressable>
+                ) : null
+              )}
 
                 {/* Live Scraper Resolving Loader Overlay */}
                 {isLoadingStream && (
@@ -1013,6 +1047,9 @@ export default function TvSerialsScreen() {
             style={styles.detailScroll}
             contentContainerStyle={styles.detailScrollContent}
             showsVerticalScrollIndicator={false}
+            delaysContentTouches={false}
+            keyboardShouldPersistTaps="handled"
+            canCancelContentTouches={true}
           >
 
           {/* Active Scraper Metadata Query Bar matching user format: Title | DD-MM-YYYY | Channel Serial */}
@@ -1036,7 +1073,7 @@ export default function TvSerialsScreen() {
           {/* STEP 1, 2, 3 SECTION                                       */}
           {/* ========================================================== */}
           <View style={styles.stepsContainer}>
-            {/* STEP 1: BUTTONS SERVER 1 (TAMILDHOOL) & SERVER 2 (TAMILGUN) - CHANNELS REMOVED */}
+            {/* STEP 1: BUTTONS SERVER 1 & SERVER 2 - CHANNELS REMOVED */}
             <View style={styles.stepSection}>
               <Text style={styles.stepHeaderTitle}>Step 1: Select Server</Text>
 
@@ -1051,6 +1088,7 @@ export default function TvSerialsScreen() {
                         isSelected ? styles.serverSelectButtonActive : styles.serverSelectButtonInactive
                       ]}
                       activeOpacity={0.8}
+                      delayPressIn={0}
                       onPress={() => {
                         setActiveServerId(srv.id);
                         executeScrapeAndPlay(selectedSerial, selectedDay, srv.id, currentCalendarDate);
@@ -1084,12 +1122,13 @@ export default function TvSerialsScreen() {
               <TouchableOpacity
                 style={styles.dropdownBox}
                 activeOpacity={0.8}
+                delayPressIn={0}
                 onPress={() => setDropdownVisible(true)}
               >
                 <View style={styles.dropdownLeft}>
                   <ChannelLogo channelCode={selectedSerial?.channelCode} size={scale(16)} style={{ marginRight: scale(8) }} />
                   <Text style={styles.dropdownSelectedText} numberOfLines={1}>
-                    {selectedSerial?.title} ({selectedSerial?.timeSlot})
+                    {selectedSerial?.title} {selectedSerial?.timeSlot ? `(${selectedSerial.timeSlot})` : ''}
                   </Text>
                 </View>
                 <Ionicons name="chevron-down" size={scale(18)} color="#4b5563" />
@@ -1106,11 +1145,11 @@ export default function TvSerialsScreen() {
                 <Text style={styles.stepHeaderTitle}>Step 3: Select Broadcast Production Date</Text>
 
                 <View style={styles.monthNav}>
-                  <TouchableOpacity onPress={prevMonth} style={styles.monthNavBtn} activeOpacity={0.7}>
+                  <TouchableOpacity onPress={prevMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
                     <Ionicons name="chevron-back" size={scale(14)} color="#374151" />
                   </TouchableOpacity>
                   <Text style={styles.monthNavLabel}>{monthName} {year}</Text>
-                  <TouchableOpacity onPress={nextMonth} style={styles.monthNavBtn} activeOpacity={0.7}>
+                  <TouchableOpacity onPress={nextMonth} style={styles.monthNavBtn} activeOpacity={0.7} delayPressIn={0}>
                     <Ionicons name="chevron-forward" size={scale(14)} color="#374151" />
                   </TouchableOpacity>
                 </View>
@@ -1141,6 +1180,7 @@ export default function TvSerialsScreen() {
                           isSelected && styles.gridDayCellActive
                         ]}
                         activeOpacity={0.75}
+                        delayPressIn={0}
                         onPress={() => {
                           setSelectedDay(item.day);
                           executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
@@ -1159,20 +1199,6 @@ export default function TvSerialsScreen() {
                   })}
                 </View>
               </View>
-            </View>
-
-            {/* ACTION BUTTON: WATCH EPISODE DIRECTLY IN-SCREEN (NO JUMP TO MOVIE DETAILS!) */}
-            <View style={styles.actionBtnWrapper}>
-              <TouchableOpacity
-                style={styles.watchStreamButton}
-                activeOpacity={0.85}
-                onPress={() => executeScrapeAndPlay(selectedSerial, selectedDay, activeServerId, currentCalendarDate)}
-              >
-                <Ionicons name="play-circle" size={scale(20)} color="#ffffff" style={{ marginRight: scale(8) }} />
-                <Text style={styles.watchStreamButtonText}>
-                  {isPlayerActive ? 'Reload Stream' : 'Watch Episode Stream'} ({selectedDay} {monthName})
-                </Text>
-              </TouchableOpacity>
             </View>
           </View>
         </ScrollView>
@@ -1277,6 +1303,9 @@ export default function TvSerialsScreen() {
         style={styles.container}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        delaysContentTouches={false}
+        keyboardShouldPersistTaps="handled"
+        canCancelContentTouches={true}
       >
         {/* 1. TOP HERO BANNER (INCREASED HEIGHT TO ADOPT POSTER IMAGE, RICH DESIGN) */}
         <View style={styles.heroOuterWrapper}>
@@ -1296,14 +1325,17 @@ export default function TvSerialsScreen() {
 
             {/* Top Row: Pill Tag + Pause/Play Button */}
             <View style={styles.heroHeaderRow}>
-              <View style={styles.networkBadgePill}>
+              <View style={[styles.networkBadgePill, currentHero.tag === 'Prime Show' ? { backgroundColor: 'rgba(239, 68, 68, 0.35)', borderColor: '#ef4444' } : null]}>
                 <ChannelLogo channelCode={currentHero.channelCode} size={scale(13)} style={{ marginRight: scale(5) }} />
-                <Text style={styles.networkBadgeText}>{currentHero.networkTag}</Text>
+                <Text style={[styles.networkBadgeText, currentHero.tag === 'Prime Show' ? { color: '#fee2e2', fontWeight: '800' } : null]}>
+                  {currentHero.networkTag}
+                </Text>
               </View>
 
               <TouchableOpacity
                 style={styles.pauseCircleBtn}
                 activeOpacity={0.7}
+                delayPressIn={0}
                 onPress={() => setIsHeroPaused((prev) => !prev)}
               >
                 <Ionicons
@@ -1324,14 +1356,12 @@ export default function TvSerialsScreen() {
                   {currentHero.tamilTitle}
                 </Text>
 
-                {/* Meta details: timeSlot & tag */}
+                {/* Meta details: Tag badge (Prime Show, Daily Soap, etc. - time removed per user request) */}
                 <View style={styles.heroMetaRow}>
-                  <View style={styles.heroTimeSlotBadge}>
-                    <Ionicons name="time-outline" size={scale(11)} color="#94a3b8" style={{ marginRight: scale(4) }} />
-                    <Text style={styles.heroTimeSlotText}>{currentHero.timeSlot || '08:00 PM'}</Text>
-                  </View>
-                  <View style={styles.heroTagBadge}>
-                    <Text style={styles.heroTagBadgeText}>{currentHero.tag || 'Daily Soap'}</Text>
+                  <View style={[styles.heroTagBadge, currentHero.tag === 'Prime Show' ? { backgroundColor: 'rgba(239, 68, 68, 0.25)', borderColor: '#ef4444' } : null]}>
+                    <Text style={[styles.heroTagBadgeText, currentHero.tag === 'Prime Show' ? { color: '#fca5a5', fontWeight: '800' } : null]}>
+                      {currentHero.tag || 'Daily Soap'}
+                    </Text>
                   </View>
                 </View>
 
@@ -1340,6 +1370,7 @@ export default function TvSerialsScreen() {
                   <TouchableOpacity
                     style={styles.quickPlayButton}
                     activeOpacity={0.8}
+                    delayPressIn={0}
                     onPress={() => handleOpenDetailScreen(currentHero)}
                   >
                     <Ionicons name="play" size={scale(14)} color="#ffffff" style={{ marginRight: scale(5) }} />
@@ -1373,6 +1404,7 @@ export default function TvSerialsScreen() {
                     key={`dot-${index}`}
                     onPress={() => setHeroIndex(index)}
                     activeOpacity={0.7}
+                    delayPressIn={0}
                     style={[
                       styles.paginationDot,
                       isActive ? styles.paginationDotActive : styles.paginationDotInactive
@@ -1384,20 +1416,18 @@ export default function TvSerialsScreen() {
           </ImageBackground>
         </View>
 
-        {/* 2. PRIMARY BROADCASTERS / சேனல்கள் (KTV REMOVED, OFFICIAL LOGOS) */}
+        {/* 2. PRIMARY BROADCASTERS / சேனல்கள் */}
         <View style={styles.sectionHeaderRow}>
           <View style={styles.sectionTitleWithIcon}>
             <Ionicons name="tv" size={scale(18)} color="#2563eb" style={{ marginRight: scale(8) }} />
             <Text style={styles.sectionHeaderTitle}>Primary Broadcasters / சேனல்கள்</Text>
-          </View>
-          <View style={styles.liveScraperChip}>
-            <Text style={styles.liveScraperChipText}>{liveSyncStatus}</Text>
           </View>
         </View>
 
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
+          delaysContentTouches={false}
           contentContainerStyle={styles.broadcastersScrollContent}
         >
           {CHANNELS.map((broadcaster) => {
@@ -1410,6 +1440,7 @@ export default function TvSerialsScreen() {
                   isSelected && styles.broadcasterPillSelected
                 ]}
                 activeOpacity={0.75}
+                delayPressIn={0}
                 onPress={() => {
                   if (homeChannelFilter === broadcaster.id) {
                     setHomeChannelFilter('all');
@@ -1445,6 +1476,7 @@ export default function TvSerialsScreen() {
                 { borderColor: serial.borderColor || '#38bdf8' }
               ]}
               activeOpacity={0.82}
+              delayPressIn={0}
               onPress={() => handleOpenDetailScreen(serial)}
             >
               <ImageBackground
@@ -1503,6 +1535,7 @@ export default function TvSerialsScreen() {
                 { borderColor: show.borderColor || '#818cf8' }
               ]}
               activeOpacity={0.82}
+              delayPressIn={0}
               onPress={() => handleOpenDetailScreen(show)}
             >
               <ImageBackground
@@ -1561,6 +1594,7 @@ export default function TvSerialsScreen() {
                 { borderColor: prg.borderColor || '#38bdf8' }
               ]}
               activeOpacity={0.82}
+              delayPressIn={0}
               onPress={() => handleOpenDetailScreen(prg)}
             >
               <ImageBackground
@@ -1619,6 +1653,7 @@ export default function TvSerialsScreen() {
                 { borderColor: evt.borderColor || '#c084fc' }
               ]}
               activeOpacity={0.82}
+              delayPressIn={0}
               onPress={() => handleOpenDetailScreen(evt)}
             >
               <ImageBackground
@@ -2791,5 +2826,55 @@ const styles = StyleSheet.create({
     fontSize: moderateScale(10),
     fontWeight: '600',
     marginTop: verticalScale(4),
+  },
+  playbackErrorContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#070b14',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: scale(20),
+    zIndex: 50,
+  },
+  playbackErrorTitle: {
+    color: '#ffffff',
+    fontSize: moderateScale(16),
+    fontWeight: '700',
+    marginBottom: verticalScale(6),
+    textAlign: 'center',
+  },
+  playbackErrorMessage: {
+    color: '#94a3b8',
+    fontSize: moderateScale(12),
+    lineHeight: verticalScale(18),
+    textAlign: 'center',
+    marginBottom: verticalScale(16),
+  },
+  playbackErrorActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+  },
+  playbackErrorRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2563eb',
+    paddingHorizontal: scale(16),
+    paddingVertical: verticalScale(9),
+    borderRadius: scale(8),
+  },
+  playbackErrorSwitchBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    paddingHorizontal: scale(16),
+    paddingVertical: verticalScale(9),
+    borderRadius: scale(8),
+  },
+  playbackErrorBtnText: {
+    color: '#ffffff',
+    fontSize: moderateScale(13),
+    fontWeight: '600',
   },
 });

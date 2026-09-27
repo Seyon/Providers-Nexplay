@@ -124,19 +124,28 @@ if ($buildSuccess) {
         Copy-Item $versionManagerPath "$providersPath\version_manager.js" -Force
     }
 
-    # Verify the 3 compiled APKs
+    # Verify and format the 3 compiled APKs to requested release format
     $apkDir = Join-Path $androidDir "app\build\outputs\apk\$buildTypeLower"
     $universalApk = Join-Path $apkDir "app-universal-$buildTypeLower.apk"
     $arm32Apk     = Join-Path $apkDir "app-armeabi-v7a-$buildTypeLower.apk"
     $arm64Apk     = Join-Path $apkDir "app-arm64-v8a-$buildTypeLower.apk"
 
+    # Standardized NexPlay release naming format
+    $nexplayUniversal = Join-Path $apkDir "NexPlay-Universal.apk"
+    $nexplayArm32     = Join-Path $apkDir "NexPlay-armeabi-v7a.apk"
+    $nexplayArm64     = Join-Path $apkDir "NexPlay-arm64-v8a.apk"
+
+    if (Test-Path $universalApk) { Copy-Item $universalApk $nexplayUniversal -Force }
+    if (Test-Path $arm32Apk)     { Copy-Item $arm32Apk $nexplayArm32 -Force }
+    if (Test-Path $arm64Apk)     { Copy-Item $arm64Apk $nexplayArm64 -Force }
+
     Write-Host ""
     Write-Host "=== COMPILED $buildTypeCap.ToUpper() APKS (TOTAL 3) ===" -ForegroundColor Green
 
     $apkList = @(
-        @{ Name = "Universal App (All ABIs)"; Path = $universalApk; Arch = "universal" },
-        @{ Name = "32-bit App              "; Path = $arm32Apk;     Arch = "armeabi-v7a" },
-        @{ Name = "64-bit App              "; Path = $arm64Apk;     Arch = "arm64-v8a" }
+        @{ Name = "Universal App (All ABIs)"; Path = $nexplayUniversal; Arch = "universal" },
+        @{ Name = "32-bit App              "; Path = $nexplayArm32;     Arch = "armeabi-v7a" },
+        @{ Name = "64-bit App              "; Path = $nexplayArm64;     Arch = "arm64-v8a" }
     )
 
     foreach ($apk in $apkList) {
@@ -185,17 +194,17 @@ try {
         $androidVer = (adb -s "$devId" shell getprop ro.build.version.release).Trim()
         Write-Host "Device Details: $devModel (Android $androidVer, Primary ABI: $devAbi)" -ForegroundColor Cyan
 
-        # Select matching APK
+        # Select matching APK in standardized format
         $targetApk = $null
-        if ($devAbi -eq "arm64-v8a" -and (Test-Path $arm64Apk)) {
-            $targetApk = $arm64Apk
-            Write-Host "Targeting optimized 64-bit APK: app-arm64-v8a-$buildTypeLower.apk" -ForegroundColor Yellow
-        } elseif ($devAbi -eq "armeabi-v7a" -and (Test-Path $arm32Apk)) {
-            $targetApk = $arm32Apk
-            Write-Host "Targeting optimized 32-bit APK: app-armeabi-v7a-$buildTypeLower.apk" -ForegroundColor Yellow
-        } elseif (Test-Path $universalApk) {
-            $targetApk = $universalApk
-            Write-Host "Targeting Universal APK: app-universal-$buildTypeLower.apk" -ForegroundColor Yellow
+        if ($devAbi -eq "arm64-v8a" -and (Test-Path $nexplayArm64)) {
+            $targetApk = $nexplayArm64
+            Write-Host "Targeting optimized 64-bit APK: NexPlay-arm64-v8a.apk" -ForegroundColor Yellow
+        } elseif ($devAbi -eq "armeabi-v7a" -and (Test-Path $nexplayArm32)) {
+            $targetApk = $nexplayArm32
+            Write-Host "Targeting optimized 32-bit APK: NexPlay-armeabi-v7a.apk" -ForegroundColor Yellow
+        } elseif (Test-Path $nexplayUniversal) {
+            $targetApk = $nexplayUniversal
+            Write-Host "Targeting Universal APK: NexPlay-Universal.apk" -ForegroundColor Yellow
         }
 
         if ($targetApk) {

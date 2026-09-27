@@ -1,15 +1,23 @@
 {
   "major": 1,
-  "minor": 6,
-  "patch": 8,
-  "issue": 2,
-  "build": 132,
-  "updateType": "bugfix",
-  "timestamp": "20260926",
-  "versionName": "1.6.8.2.132-bugfix.20260926",
-  "versionCode": 1680132,
-  "lastSuccessfulBuild": "2026-09-27T05:06:36.881Z",
+  "minor": 7,
+  "patch": 0,
+  "issue": 0,
+  "build": 133,
+  "updateType": "minor",
+  "timestamp": "20260927",
+  "versionName": "1.7.0.0.133-minor.20260927",
+  "versionCode": 1700133,
+  "lastSuccessfulBuild": "2026-09-27T09:50:47.704Z",
   "history": [
+    {
+      "versionName": "1.7.0.0.133-minor.20260927",
+      "versionCode": 1700133,
+      "updateType": "minor",
+      "build": 133,
+      "note": "Tv serial home posters, hero carousel height, server 1 playback fix",
+      "builtAt": "2026-09-27T09:50:47.704Z"
+    },
     {
       "versionName": "1.6.8.2.132-bugfix.20260926",
       "versionCode": 1680132,

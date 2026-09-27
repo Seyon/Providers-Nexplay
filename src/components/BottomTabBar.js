@@ -43,7 +43,9 @@ export default function BottomTabBar({ activeTab = 'Home', onTabPress }) {
                   styles.tabButton,
                   isActive && styles.tabButtonActive
                 ]}
-                activeOpacity={0.7}
+                activeOpacity={0.6}
+                delayPressIn={0}
+                hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
                 onPress={() => onTabPress && onTabPress(tab.name)}
               >
                 <Ionicons

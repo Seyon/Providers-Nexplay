@@ -35,7 +35,10 @@ export const TAMILDHOOL_ALIASES = {
   'chinnamarumagal': 'Chinna Marumagal',
   'chinna marumagal': 'Chinna Marumagal',
   'baakiya lakshmi': 'Baakiyalakshmi',
-  'sundari': 'Sundari'
+  'sundari': 'Sundari',
+  'bigg boss 10': 'Bigg Boss Tamil Season 10',
+  'bigg boss': 'Bigg Boss Tamil Season 10',
+  'bigg boss tamil': 'Bigg Boss Tamil Season 10'
 };
 
 export class TamilDhoolClient {
