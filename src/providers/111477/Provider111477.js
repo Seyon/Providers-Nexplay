@@ -35,6 +35,9 @@ export class Provider111477Client {
       lastFetchedTvs: 0,
       ttlMs: 30 * 60 * 1000 // 30 minutes
     };
+
+    // Instant in-memory resolved stream cache (15-min TTL)
+    this.streamCache = new Map();
   }
 
   /**
@@ -153,7 +156,7 @@ export class Provider111477Client {
   }
 
   /**
-   * Fast O(1) Probe for Movie Directory
+   * Fast O(1) Concurrent Probe for Movie Directory
    */
   async probeMovieDirectory(title, year) {
     const clean = this.sanitizeTitle(title);
@@ -165,19 +168,25 @@ export class Provider111477Client {
     }
     candidates.push(`/movies/${encodeURIComponent(clean)}/`);
 
-    for (const path of candidates) {
+    // Concurrent probing with Promise.any: whichever directory responds 200 first returns immediately
+    const probePromises = candidates.map(async (path) => {
       const url = `${this.baseUrl}${path}`;
       const html = await this.fetchHtml(url);
       if (html) {
         return { folderUrl: url, html, path };
       }
-      await sleep(150);
+      throw new Error(`Directory not found: ${path}`);
+    });
+
+    try {
+      return await Promise.any(probePromises);
+    } catch {
+      return null;
     }
-    return null;
   }
 
   /**
-   * Fast O(1) Probe for TV Show Directory
+   * Fast O(1) Concurrent Probe for TV Show Directory
    */
   async probeTvShowDirectory(title, year) {
     const clean = this.sanitizeTitle(title);
@@ -189,18 +198,26 @@ export class Provider111477Client {
     }
     candidateNames.push(clean);
 
+    const probePromises = [];
     for (const base of candidateBases) {
       for (const name of candidateNames) {
         const path = `${base}${encodeURIComponent(name)}/`;
         const url = `${this.baseUrl}${path}`;
-        const html = await this.fetchHtml(url);
-        if (html) {
-          return { folderUrl: url, html, path };
-        }
-        await sleep(150);
+        probePromises.push((async () => {
+          const html = await this.fetchHtml(url);
+          if (html) {
+            return { folderUrl: url, html, path };
+          }
+          throw new Error(`Directory not found: ${path}`);
+        })());
       }
     }
-    return null;
+
+    try {
+      return await Promise.any(probePromises);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -309,9 +326,9 @@ export class Provider111477Client {
   /**
    * Extract Details & Streams from Movie or Series Directory
    */
-  async extractDetails(folderUrl, targetSeason = 1) {
+  async extractDetails(folderUrl, targetSeason = 1, cachedHtml = null) {
     console.log(`[Provider111477] extractDetails for: ${folderUrl} (Season ${targetSeason})`);
-    const html = await this.fetchHtml(folderUrl);
+    const html = cachedHtml || await this.fetchHtml(folderUrl);
     if (!html) return null;
 
     const entries = this.parseTableEntries(html);
@@ -328,7 +345,6 @@ export class Provider111477Client {
 
       let episodes = [];
       if (targetSeasonEntry) {
-        await sleep(200);
         const seasonHtml = await this.fetchHtml(targetSeasonEntry.url);
         if (seasonHtml) {
           const epEntries = this.parseTableEntries(seasonHtml);
@@ -379,6 +395,16 @@ export class Provider111477Client {
       folderUrl = pageUrlOrOptions;
     }
 
+    // Check memory stream cache first (Instant 0ms resolution)
+    const cacheKey = `${targetTitle || folderUrl}_${targetYear || ''}_${isTV ? 'tv' : 'movie'}_${targetSeason}_${targetEpisode}`;
+    if (this.streamCache && this.streamCache.has(cacheKey)) {
+      const cached = this.streamCache.get(cacheKey);
+      if (Date.now() - cached.timestamp < 15 * 60 * 1000) {
+        console.log(`[Provider111477] ⚡ Instant stream cache HIT for: ${cacheKey}`);
+        return cached.data;
+      }
+    }
+
     console.log(`[Provider111477] getPlayableStream:`, {
       folderUrl,
       isTV,
@@ -388,14 +414,21 @@ export class Provider111477Client {
       targetYear
     });
 
+    let preloadedHtml = null;
     // 1. If folderUrl not provided, probe directly using title and year
     if (!folderUrl && targetTitle) {
       if (isTV) {
         const tvProbe = await this.probeTvShowDirectory(targetTitle, targetYear);
-        if (tvProbe) folderUrl = tvProbe.folderUrl;
+        if (tvProbe) {
+          folderUrl = tvProbe.folderUrl;
+          preloadedHtml = tvProbe.html;
+        }
       } else {
         const movieProbe = await this.probeMovieDirectory(targetTitle, targetYear);
-        if (movieProbe) folderUrl = movieProbe.folderUrl;
+        if (movieProbe) {
+          folderUrl = movieProbe.folderUrl;
+          preloadedHtml = movieProbe.html;
+        }
       }
     }
 
@@ -403,11 +436,13 @@ export class Provider111477Client {
       throw new Error(`[Provider111477] Could not resolve folder directory for "${targetTitle || 'requested media'}"`);
     }
 
-    // 2. Extract details
-    const details = await this.extractDetails(folderUrl, targetSeason);
+    // 2. Extract details reusing preloadedHtml if already fetched
+    const details = await this.extractDetails(folderUrl, targetSeason, preloadedHtml);
     if (!details) {
       throw new Error(`[Provider111477] Failed to extract directory details from ${folderUrl}`);
     }
+
+    let result = null;
 
     if (isTV) {
       // Find matching episode
@@ -442,7 +477,7 @@ export class Provider111477Client {
         qualitySizes[matchingEp.quality || '1080p'] = matchingEp.sizeFormatted;
       }
 
-      return {
+      result = {
         title: `${details.title} - S${targetSeason}E${targetEpisode}`,
         mediaType: 'series',
         seasonNumber: targetSeason,
@@ -491,7 +526,7 @@ export class Provider111477Client {
         }
       });
 
-      return {
+      result = {
         title: details.title,
         mediaType: 'movie',
         streamUrl: bestStream.url,
@@ -511,6 +546,11 @@ export class Provider111477Client {
         backupStreams: videoFiles.filter(f => f.url !== bestStream.url)
       };
     }
+
+    if (result && this.streamCache) {
+      this.streamCache.set(cacheKey, { timestamp: Date.now(), data: result });
+    }
+    return result;
   }
 }
 

@@ -569,16 +569,32 @@ export default function TvSerialsScreen({ onMoviePress, onDetailStateChange }) {
     if (!currentStreamUrl) return null;
     const playUri = currentStreamUrl;
     const initOptions = [
-      '--network-caching=2000',
-      '--live-caching=2000',
+      '--network-caching=250',
+      '--live-caching=250',
+      '--file-caching=250',
+      '--clock-jitter=0',
+      '--clock-synchro=0',
       '--drop-late-frames',
-      '--skip-frames'
+      '--skip-frames',
+      '--no-sub-autodetect-file',
+      '--no-stats',
+      '--avcodec-fast',
+      '--no-audio-time-stretch',
+      '--ipv4-timeout=1500'
     ];
 
     const mediaOptions = [
-      ':network-caching=2000',
-      ':live-caching=2000',
+      ':network-caching=250',
+      ':live-caching=250',
+      ':file-caching=250',
+      ':sout-mux-caching=250',
+      ':clock-jitter=0',
+      ':clock-synchro=0',
+      ':avcodec-fast=true',
+      ':avcodec-threads=4',
+      ':no-sub-autodetect-file',
       ':http-reconnect=true',
+      ':http-continuous=true',
       ':no-stats'
     ];
 
@@ -587,7 +603,7 @@ export default function TvSerialsScreen({ onMoviePress, onDetailStateChange }) {
       initOptions.push(`--http-referrer=${ref}`);
       mediaOptions.push(`:http-referrer=${ref}`);
     }
-    const ua = currentStreamHeaders?.['User-Agent'] || currentStreamHeaders?.['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    const ua = currentStreamHeaders?.['User-Agent'] || currentStreamHeaders?.['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
     if (ua) {
       initOptions.push(`--http-user-agent=${ua}`);
       mediaOptions.push(`:http-user-agent=${ua}`);
@@ -595,7 +611,7 @@ export default function TvSerialsScreen({ onMoviePress, onDetailStateChange }) {
 
     return {
       uri: playUri,
-      hwDecoderEnabled: VLCHardwareDecoder?.Automatic,
+      hwDecoderEnabled: VLCHardwareDecoder?.Full ?? 2,
       mediaOptions,
       initOptions
     };
