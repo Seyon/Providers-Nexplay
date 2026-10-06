@@ -1,15 +1,23 @@
 {
   "major": 1,
   "minor": 7,
-  "patch": 14,
+  "patch": 15,
   "issue": 0,
-  "build": 139,
+  "build": 140,
   "updateType": "patch",
   "timestamp": "20261006",
-  "versionName": "1.7.14.0.139-patch.20261006",
-  "versionCode": 1840139,
-  "lastSuccessfulBuild": "2026-10-06T13:16:08.070Z",
+  "versionName": "1.7.15.0.140-patch.20261006",
+  "versionCode": 1850140,
+  "lastSuccessfulBuild": "2026-10-06T14:33:27.671Z",
   "history": [
+    {
+      "versionName": "1.7.15.0.140-patch.20261006",
+      "versionCode": 1850140,
+      "updateType": "patch",
+      "build": 140,
+      "note": "Server 4 (111477) direct scraper integration",
+      "builtAt": "2026-10-06T14:33:27.671Z"
+    },
     {
       "versionName": "1.7.14.0.139-patch.20261006",
       "versionCode": 1840139,
