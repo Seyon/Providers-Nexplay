@@ -208,13 +208,13 @@ try {
         }
 
         if ($targetApk) {
-            Write-Host "Installing $targetApk to $devId over Wireless Debugging..." -ForegroundColor Cyan
-            $installResult = adb -s "$devId" install -r -d "$targetApk"
+            Write-Host "Installing $targetApk to $devId over Wireless Debugging (User 0)..." -ForegroundColor Cyan
+            $installResult = adb -s "$devId" install --user 0 -r -d "$targetApk"
             Write-Host "Install Result: $installResult" -ForegroundColor Green
 
             if (-not $NoLaunch) {
-                Write-Host "Launching NexPlay ($stagedVersionName) on device..." -ForegroundColor Cyan
-                adb -s "$devId" shell am start -n com.anonymous.Stitchnexplay/.MainActivity
+                Write-Host "Launching NexPlay ($stagedVersionName) on device (User 0)..." -ForegroundColor Cyan
+                adb -s "$devId" shell am start --user 0 -n com.anonymous.Stitchnexplay/.MainActivity
                 Write-Host "o. NexPlay launched successfully!" -ForegroundColor Green
             }
         }

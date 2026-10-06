@@ -1,15 +1,39 @@
 {
   "major": 1,
   "minor": 7,
-  "patch": 10,
+  "patch": 13,
   "issue": 0,
-  "build": 135,
+  "build": 138,
   "updateType": "patch",
-  "timestamp": "20260927",
-  "versionName": "1.7.10.0.135-patch.20260927",
-  "versionCode": 1800135,
-  "lastSuccessfulBuild": "2026-09-27T16:17:21.953Z",
+  "timestamp": "20260928",
+  "versionName": "1.7.13.0.138-patch.20260928",
+  "versionCode": 1830138,
+  "lastSuccessfulBuild": "2026-09-28T17:37:41.042Z",
   "history": [
+    {
+      "versionName": "1.7.13.0.138-patch.20260928",
+      "versionCode": 1830138,
+      "updateType": "patch",
+      "build": 138,
+      "note": "TMDB API Key prompt, Donation modal & Account Key Management",
+      "builtAt": "2026-09-28T17:37:41.042Z"
+    },
+    {
+      "versionName": "1.7.12.0.137-patch.20260928",
+      "versionCode": 1820137,
+      "updateType": "patch",
+      "build": 137,
+      "note": "TMDB API Key prompt, Donation modal & Account Key Management",
+      "builtAt": "2026-09-28T17:21:17.751Z"
+    },
+    {
+      "versionName": "1.7.11.0.136-patch.20260927",
+      "versionCode": 1810136,
+      "updateType": "patch",
+      "build": 136,
+      "note": "Debug build with seek diagnostics",
+      "builtAt": "2026-09-27T16:27:57.519Z"
+    },
     {
       "versionName": "1.7.10.0.135-patch.20260927",
       "versionCode": 1800135,

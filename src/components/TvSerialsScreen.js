@@ -65,12 +65,18 @@ function ChannelLogo({ channelCode, size = scale(16), style }) {
   }
 }
 
-export default function TvSerialsScreen() {
+export default function TvSerialsScreen({ onMoviePress, onDetailStateChange }) {
   const insets = useSafeAreaInsets();
   const topNotchPadding = Math.max(insets.top, StatusBar.currentHeight || 0, 10);
 
   // Screen View Mode: Home Catalog vs Individual Detailed Serial Screen
   const [isDetailView, setIsDetailView] = useState(false);
+
+  useEffect(() => {
+    if (onDetailStateChange) {
+      onDetailStateChange(isDetailView);
+    }
+  }, [isDetailView, onDetailStateChange]);
 
   // Step 1: Active Server (Server 1: Tamildhool vs Server 2: Tamilgun)
   const [activeServerId, setActiveServerId] = useState('tamildhool');
@@ -189,7 +195,7 @@ export default function TvSerialsScreen() {
     ).start();
   }, [pulseAnim]);
 
-  // Highlights for the Hero Carousel (Featured Prime Shows: Bigg Boss 10 + Flagships)
+  // Highlights for the Hero Carousel (Featured Prime Shows: Kayal #1 matching reference + Bigg Boss 10 + Flagships)
   const heroHighlights = useMemo(() => {
     const biggBossEntry = {
       id: 'vijay_bigg_boss_10',
@@ -207,9 +213,13 @@ export default function TvSerialsScreen() {
       tamilColor: '#ef4444'
     };
 
-    const flagshipCodes = ['kayal', 'singapennae', 'siragadikka_aasai', 'pandian_stores_2', 'karthigai_deepam'];
-    const curated = [biggBossEntry];
-    for (const code of flagshipCodes) {
+    const curated = [];
+    const kayalEntry = allServerSerials.find(s => s.serialCode === 'kayal');
+    if (kayalEntry) curated.push(kayalEntry);
+    curated.push(biggBossEntry);
+
+    const otherFlagships = ['singapennae', 'vanathai_pola', 'marumagal', 'moondru_mudichu', 'siragadikka_aasai', 'karthigai_deepam'];
+    for (const code of otherFlagships) {
       const found = allServerSerials.find(s => s.serialCode === code);
       if (found) curated.push(found);
     }
@@ -234,6 +244,28 @@ export default function TvSerialsScreen() {
     executeScrapeAndPlay(item, selectedDay, activeServerId, currentCalendarDate);
   };
 
+  // Hero description helper
+  const getHeroDescription = useCallback((hero) => {
+    if (!hero) return '';
+    if (hero.description) return hero.description;
+    if (hero.serialCode === 'bigg_boss_10') {
+      return 'The premier reality spectacle in Tamil television. Uncut 24x7 drama, daily tasks, nominations, and weekend eviction specials.';
+    }
+    if (hero.serialCode === 'kayal') {
+      return 'A moving emotional journey of a devoted woman standing steadfast as the anchor of her family through trials.';
+    }
+    if (hero.serialCode === 'singapennae') {
+      return 'An inspiring tale of a determined young woman overcoming odds and achieving independence in the corporate world.';
+    }
+    if (hero.serialCode === 'siragadikka_aasai') {
+      return 'A heartwarming family drama exploring modern marital relationships, trust, and endearing ambitions.';
+    }
+    if (hero.serialCode === 'karthigai_deepam') {
+      return 'A touching cultural drama where genuine love and deep respect illuminate every relationship.';
+    }
+    return `${hero.title} (${hero.tamilTitle}) airing on ${hero.channel}. High definition Tamil broadcast.`;
+  }, []);
+
   // Calendar Helpers for Step 3
   const year = currentCalendarDate.getFullYear();
   const month = currentCalendarDate.getMonth();
@@ -256,7 +288,20 @@ export default function TvSerialsScreen() {
     calendarDays.push({ day: d, key: `day-${d}` });
   }
 
-  const calendarCellWidth = Math.floor((windowWidth - scale(28) - scale(20)) / 7);
+  // Row-chunked calendar (7 days per row) to ensure 100% stable flex grid on Android
+  const calendarRows = useMemo(() => {
+    const rows = [];
+    for (let i = 0; i < calendarDays.length; i += 7) {
+      rows.push(calendarDays.slice(i, i + 7));
+    }
+    if (rows.length > 0) {
+      const lastRow = rows[rows.length - 1];
+      while (lastRow.length < 7) {
+        lastRow.push({ day: null, key: `empty-pad-${lastRow.length}` });
+      }
+    }
+    return rows;
+  }, [calendarDays]);
 
   // All selectable items for Step 2 (Serials + Reality Shows + TV Programmes)
   const allSelectableItems = useMemo(() => {
@@ -1154,40 +1199,42 @@ export default function TvSerialsScreen() {
                   ))}
                 </View>
 
-                <View style={styles.calendarDaysGrid}>
-                  {calendarDays.map((item) => {
-                    if (item.day === null) {
-                      return <View key={item.key} style={[styles.emptyGridCell, { width: calendarCellWidth, height: calendarCellWidth }]} />;
-                    }
+                {/* 7-column calendar rows to prevent flexWrap distortion */}
+                {calendarRows.map((row, rIdx) => (
+                  <View key={`cal-row-${rIdx}`} style={styles.calendarRow}>
+                    {row.map((item) => {
+                      if (item.day === null) {
+                        return <View key={item.key} style={styles.emptyGridCell} />;
+                      }
 
-                    const isSelected = selectedDay === item.day;
-                    return (
-                      <TouchableOpacity
-                        key={item.key}
-                        style={[
-                          styles.gridDayCell,
-                          { width: calendarCellWidth, height: calendarCellWidth },
-                          isSelected && styles.gridDayCellActive
-                        ]}
-                        activeOpacity={0.7}
-                        delayPressIn={0}
-                        onPress={() => {
-                          setSelectedDay(item.day);
-                          executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
-                        }}
-                      >
-                        <Text
+                      const isSelected = selectedDay === item.day;
+                      return (
+                        <TouchableOpacity
+                          key={item.key}
                           style={[
-                            styles.gridDayText,
-                            isSelected && styles.gridDayTextActive
+                            styles.gridDayCell,
+                            isSelected && styles.gridDayCellActive
                           ]}
+                          activeOpacity={0.7}
+                          delayPressIn={0}
+                          onPress={() => {
+                            setSelectedDay(item.day);
+                            executeScrapeAndPlay(selectedSerial, item.day, activeServerId, currentCalendarDate);
+                          }}
                         >
-                          {item.day}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                          <Text
+                            style={[
+                              styles.gridDayText,
+                              isSelected && styles.gridDayTextActive
+                            ]}
+                          >
+                            {item.day}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ))}
               </View>
             </View>
           </View>
@@ -1300,28 +1347,32 @@ export default function TvSerialsScreen() {
         keyboardShouldPersistTaps="handled"
         canCancelContentTouches={true}
       >
-        {/* 1. TOP HERO BANNER (INCREASED HEIGHT TO ADOPT POSTER IMAGE, RICH DESIGN) */}
+        {/* 1. TOP HERO BANNER (Pixel-perfect matching attached reference) */}
         <View style={styles.heroOuterWrapper}>
           <ImageBackground
             source={{ uri: currentHero.image }}
             style={styles.heroCard}
-            imageStyle={styles.heroCardImage}
+            imageStyle={styles.heroCardImageStyle}
             resizeMode="cover"
           >
-            {/* Dark & Glass Gradient Overlays to adopt image beautifully */}
+            {/* Dark gradient overlay for text readability */}
             <LinearGradient
-              colors={['rgba(6, 10, 20, 0.45)', 'rgba(6, 10, 20, 0.78)', '#060a14']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0.6, y: 1 }}
+              colors={['rgba(7, 10, 19, 0.35)', 'rgba(7, 10, 19, 0.72)', '#070a13']}
+              locations={[0, 0.55, 1]}
               style={StyleSheet.absoluteFillObject}
             />
 
-            {/* Top Row: Pill Tag + Pause/Play Button */}
+            {/* Top Row: Pill Tag (☀️ SUN TV • PRIME) + Pause/Play Button */}
             <View style={styles.heroHeaderRow}>
-              <View style={[styles.networkBadgePill, currentHero.tag === 'Prime Show' ? { backgroundColor: 'rgba(239, 68, 68, 0.35)', borderColor: '#ef4444' } : null]}>
-                <ChannelLogo channelCode={currentHero.channelCode} size={scale(13)} style={{ marginRight: scale(5) }} />
-                <Text style={[styles.networkBadgeText, currentHero.tag === 'Prime Show' ? { color: '#fee2e2', fontWeight: '800' } : null]}>
-                  {currentHero.networkTag}
+              <View style={styles.heroPrimeBadge}>
+                <Ionicons
+                  name={currentHero.channelCode === 'sun' ? 'sunny' : currentHero.channelCode === 'vijay' ? 'star' : 'tv'}
+                  size={scale(12)}
+                  color="#facc15"
+                  style={{ marginRight: scale(5) }}
+                />
+                <Text style={styles.heroPrimeBadgeText}>
+                  {currentHero.tag === 'Prime Show' ? '★ PRIME SHOW' : (currentHero.networkTag || `${currentHero.channel.toUpperCase()} • PRIME`)}
                 </Text>
               </View>
 
@@ -1343,6 +1394,7 @@ export default function TvSerialsScreen() {
 
             {/* Hero Main Content Row */}
             <View style={styles.heroMainRow}>
+              {/* Left Info Column */}
               <View style={styles.heroInfoColumn}>
                 <Text style={styles.heroTitle} numberOfLines={1}>
                   {currentHero.title}
@@ -1351,48 +1403,48 @@ export default function TvSerialsScreen() {
                   {currentHero.tamilTitle}
                 </Text>
 
-                {/* Meta details: Tag badge (Prime Show, Daily Soap, etc. - time removed per user request) */}
+                {/* Metadata row: Time Slot + Daily Soap Tag */}
                 <View style={styles.heroMetaRow}>
-                  <View style={[styles.heroTagBadge, currentHero.tag === 'Prime Show' ? { backgroundColor: 'rgba(239, 68, 68, 0.25)', borderColor: '#ef4444' } : null]}>
-                    <Text style={[styles.heroTagBadgeText, currentHero.tag === 'Prime Show' ? { color: '#fca5a5', fontWeight: '800' } : null]}>
-                      {currentHero.tag || 'Daily Soap'}
-                    </Text>
+                  <View style={styles.heroTimeSlotBadge}>
+                    <Ionicons name="time-outline" size={scale(11)} color="#94a3b8" style={{ marginRight: scale(4) }} />
+                    <Text style={styles.heroTimeSlotText}>{currentHero.timeSlot || '07:30 PM'}</Text>
+                  </View>
+                  <View style={styles.heroCategoryPill}>
+                    <Text style={styles.heroCategoryPillText}>{currentHero.tag || 'Daily Soap'}</Text>
                   </View>
                 </View>
 
-                {/* Action Button: Quick Play */}
-                <View style={styles.heroActionsRow}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.quickPlayButton,
-                      pressed && { opacity: 0.8, transform: [{ scale: 0.96 }] }
-                    ]}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    onPress={() => handleOpenDetailScreen(currentHero)}
-                  >
-                    <Ionicons name="play" size={scale(14)} color="#ffffff" style={{ marginRight: scale(5) }} />
-                    <Text style={styles.quickPlayText}>Quick Play</Text>
-                  </Pressable>
-                </View>
+                {/* Quick Play Button */}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.quickPlayButton,
+                    pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }
+                  ]}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  onPress={() => handleOpenDetailScreen(currentHero)}
+                >
+                  <Ionicons name="play" size={scale(14)} color="#ffffff" style={{ marginRight: scale(6) }} />
+                  <Text style={styles.quickPlayText}>Quick Play</Text>
+                </Pressable>
               </View>
 
-              {/* Poster Preview Card on the Right (Adopts image with glowing glass frame) */}
-              <View style={styles.heroPosterCardContainer}>
-                <View style={styles.heroPosterCardFrame}>
+              {/* Right: Floating Picture-in-Picture Video Preview Card with 🟢 HD badge */}
+              <View style={styles.heroPipContainer}>
+                <View style={styles.heroPipCard}>
                   <Image
                     source={{ uri: currentHero.image }}
-                    style={styles.heroPosterCardImage}
+                    style={styles.heroPipImage}
                     resizeMode="cover"
                   />
-                  <View style={styles.heroLiveBadge}>
-                    <Animated.View style={[styles.liveStatusDot, { opacity: pulseAnim }]} />
-                    <Text style={styles.heroLiveBadgeText}>HD</Text>
+                  <View style={styles.heroPipHdBadge}>
+                    <View style={styles.heroPipGreenDot} />
+                    <Text style={styles.heroPipHdText}>HD</Text>
                   </View>
                 </View>
               </View>
             </View>
 
-            {/* Carousel Pagination Dots (Fixed highlights) */}
+            {/* Bottom-left Carousel Pagination Dots */}
             <View style={styles.paginationRow}>
               {heroHighlights.map((_, index) => {
                 const isActive = index === heroIndex;
@@ -1402,8 +1454,7 @@ export default function TvSerialsScreen() {
                     onPress={() => setHeroIndex(index)}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     style={({ pressed }) => [
-                      styles.paginationDot,
-                      isActive ? styles.paginationDotActive : styles.paginationDotInactive,
+                      isActive ? styles.paginationPillActive : styles.paginationDotInactive,
                       pressed && { opacity: 0.5 }
                     ]}
                   />
@@ -1416,28 +1467,28 @@ export default function TvSerialsScreen() {
         {/* 2. PRIMARY BROADCASTERS / சேனல்கள் */}
         <View style={styles.sectionHeaderRow}>
           <View style={styles.sectionTitleWithIcon}>
-            <Ionicons name="tv" size={scale(18)} color="#2563eb" style={{ marginRight: scale(8) }} />
+            <Ionicons name="tv" size={scale(18)} color="#3b82f6" style={{ marginRight: scale(8) }} />
             <Text style={styles.sectionHeaderTitle}>Primary Broadcasters / சேனல்கள்</Text>
+          </View>
+          <View style={styles.liveSyncedBadge}>
+            <Ionicons name="flash" size={scale(11)} color="#facc15" style={{ marginRight: scale(4) }} />
+            <Text style={styles.liveSyncedText}>Live Synced (88)</Text>
           </View>
         </View>
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          delaysContentTouches={false}
-          contentContainerStyle={styles.broadcastersScrollContent}
-        >
+        {/* 3 White Broadcaster Cards in horizontal row */}
+        <View style={styles.broadcastersRow}>
           {CHANNELS.map((broadcaster) => {
             const isSelected = homeChannelFilter === broadcaster.id;
             return (
               <Pressable
                 key={broadcaster.id}
                 style={({ pressed }) => [
-                  styles.broadcasterPill,
-                  isSelected && styles.broadcasterPillSelected,
-                  pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] }
+                  styles.whiteBroadcasterCard,
+                  isSelected && styles.whiteBroadcasterCardSelected,
+                  pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
                 ]}
-                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                 onPress={() => {
                   if (homeChannelFilter === broadcaster.id) {
                     setHomeChannelFilter('all');
@@ -1446,18 +1497,28 @@ export default function TvSerialsScreen() {
                   }
                 }}
               >
-                <ChannelLogo channelCode={broadcaster.code} size={scale(20)} style={{ marginRight: scale(8) }} />
-                <View style={styles.broadcasterNamesWrapper}>
-                  <Text style={styles.broadcasterName}>{broadcaster.name}</Text>
-                  <Text style={styles.broadcasterTamilName}>{broadcaster.tamilName}</Text>
+                <View style={styles.broadcasterCardIconWrap}>
+                  {broadcaster.code === 'sun' && (
+                    <Ionicons name="sunny" size={scale(22)} color="#f59e0b" />
+                  )}
+                  {broadcaster.code === 'vijay' && (
+                    <FontAwesome5 name="star" size={scale(18)} color="#ef4444" />
+                  )}
+                  {broadcaster.code === 'zee' && (
+                    <MaterialCommunityIcons name="weather-sunset-up" size={scale(22)} color="#a855f7" />
+                  )}
+                </View>
+                <View style={styles.broadcasterCardTextWrap}>
+                  <Text style={styles.broadcasterCardName}>{broadcaster.name}</Text>
+                  <Text style={styles.broadcasterCardTamilName}>{broadcaster.tamilName}</Text>
                 </View>
               </Pressable>
             );
           })}
-        </ScrollView>
+        </View>
 
-        {/* 3. TRENDING DAILY SERIALS / தொடர்கள் (NO star ratings, opens individual detail on click) */}
-        <View style={[styles.sectionHeaderRow, { marginTop: verticalScale(16) }]}>
+        {/* 3. TRENDING DAILY SERIALS / தொடர்கள் */}
+        <View style={[styles.sectionHeaderRow, { marginTop: verticalScale(18) }]}>
           <View style={styles.sectionTitleWithIcon}>
             <Ionicons name="trending-up" size={scale(18)} color="#ef4444" style={{ marginRight: scale(8) }} />
             <Text style={styles.sectionHeaderTitle}>Trending Daily Serials / தொடர்கள்</Text>
@@ -1469,56 +1530,59 @@ export default function TvSerialsScreen() {
             <Pressable
               key={serial.id}
               style={({ pressed }) => [
-                styles.serialCard,
-                { borderColor: serial.borderColor || '#38bdf8' },
-                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
+                styles.serialGridCardWrapper,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
               ]}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(serial)}
             >
               <ImageBackground
                 source={{ uri: serial.image }}
-                style={styles.cardImageBg}
-                imageStyle={styles.cardImageBgInner}
+                style={styles.serialGridCardBg}
+                imageStyle={styles.serialGridCardImageStyle}
                 resizeMode="cover"
               >
                 <LinearGradient
-                  colors={['rgba(15, 23, 42, 0.45)', 'rgba(15, 23, 42, 0.82)', '#090d16']}
-                  style={styles.cardGradientOverlay}
-                >
-                  {/* Top row: Channel Badge + Time Slot */}
-                  <View style={styles.cardTopRow}>
-                    <View style={styles.channelBadgePill}>
-                      <ChannelLogo channelCode={serial.channelCode} size={scale(11)} style={{ marginRight: scale(4) }} />
-                      <Text style={styles.channelBadgeText}>{serial.channel}</Text>
-                    </View>
-                    <View style={styles.cardSlotBadge}>
-                      <Text style={styles.cardSlotBadgeText}>{serial.timeSlot}</Text>
-                    </View>
-                  </View>
+                  colors={['rgba(15, 23, 42, 0.35)', 'rgba(15, 23, 42, 0.72)', '#090d16']}
+                  locations={[0, 0.5, 1]}
+                  style={StyleSheet.absoluteFillObject}
+                />
 
-                  {/* Center: Title + Tamil Subtitle */}
-                  <View style={styles.cardTitleContainer}>
-                    <Text style={styles.cardTitleText} numberOfLines={1}>
-                      {serial.title}
-                    </Text>
-                    <Text style={[styles.cardTamilTitleText, { color: serial.tamilColor || '#38bdf8' }]} numberOfLines={1}>
-                      {serial.tamilTitle}
-                    </Text>
+                {/* Top row: Channel Badge + Time Slot */}
+                <View style={styles.gridCardTopRow}>
+                  <View style={styles.gridPill}>
+                    <Ionicons 
+                      name={serial.channelCode === 'sun' ? 'sunny' : serial.channelCode === 'vijay' ? 'star' : 'tv'} 
+                      size={scale(10)} 
+                      color={serial.channelCode === 'sun' ? '#f59e0b' : serial.channelCode === 'vijay' ? '#ef4444' : '#a855f7'} 
+                      style={{ marginRight: scale(4) }} 
+                    />
+                    <Text style={styles.gridPillText}>{serial.channel}</Text>
                   </View>
+                  <View style={styles.gridPill}>
+                    <Text style={styles.gridPillText}>{serial.timeSlot}</Text>
+                  </View>
+                </View>
 
-                  {/* Bottom: Episodes count + Tag */}
-                  <View style={styles.cardBottomRow}>
-                    <Text style={styles.cardMetaLeft}>{serial.episodes}</Text>
-                    <Text style={styles.cardMetaRight}>{serial.tag || 'Daily Soap'}</Text>
+                {/* Bottom: Title + Tamil Subtitle + Meta */}
+                <View style={styles.gridCardBottomContent}>
+                  <Text style={styles.gridCardTitleText} numberOfLines={1}>
+                    {serial.title}
+                  </Text>
+                  <Text style={styles.gridCardTamilTitleText} numberOfLines={1}>
+                    {serial.tamilTitle}
+                  </Text>
+                  <View style={styles.gridCardMetaRow}>
+                    <Text style={styles.gridCardMetaLeft}>{serial.episodes}</Text>
+                    <Text style={styles.gridCardMetaRight}>{serial.tag || 'Daily Soap'}</Text>
                   </View>
-                </LinearGradient>
+                </View>
               </ImageBackground>
             </Pressable>
           ))}
         </View>
 
-        {/* 4. POPULAR REALITY SHOWS / நிகழ்ச்சிகள் (NO star ratings) */}
+        {/* 4. POPULAR REALITY SHOWS / நிகழ்ச்சிகள் */}
         <View style={styles.realityHeaderWrapper}>
           <Text style={styles.sectionHeaderTitleCentered}>Popular Reality Shows / நிகழ்ச்சிகள்</Text>
         </View>
@@ -1528,50 +1592,55 @@ export default function TvSerialsScreen() {
             <Pressable
               key={show.id}
               style={({ pressed }) => [
-                styles.serialCard,
-                { borderColor: show.borderColor || '#818cf8' },
-                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
+                styles.serialGridCardWrapper,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
               ]}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(show)}
             >
               <ImageBackground
                 source={{ uri: show.image }}
-                style={styles.cardImageBg}
-                imageStyle={styles.cardImageBgInner}
+                style={styles.serialGridCardBg}
+                imageStyle={styles.serialGridCardImageStyle}
                 resizeMode="cover"
               >
                 <LinearGradient
-                  colors={['rgba(15, 23, 42, 0.45)', 'rgba(15, 23, 42, 0.82)', '#090d16']}
-                  style={styles.cardGradientOverlay}
-                >
-                  {/* Top row: Channel Badge + Air Slot */}
-                  <View style={styles.cardTopRow}>
-                    <View style={styles.channelBadgePill}>
-                      <ChannelLogo channelCode={show.channelCode} size={scale(11)} style={{ marginRight: scale(4) }} />
-                      <Text style={styles.channelBadgeText}>{show.channel}</Text>
-                    </View>
-                    <View style={styles.cardSlotBadge}>
-                      <Text style={styles.cardSlotBadgeText}>Weekend</Text>
-                    </View>
-                  </View>
+                  colors={['rgba(26, 14, 42, 0.35)', 'rgba(26, 14, 42, 0.75)', '#110a1f']}
+                  locations={[0, 0.5, 1]}
+                  style={StyleSheet.absoluteFillObject}
+                />
 
-                  {/* Center: Title + Tamil Subtitle */}
-                  <View style={styles.cardTitleContainer}>
-                    <Text style={styles.cardTitleText} numberOfLines={1}>
-                      {show.title}
-                    </Text>
-                    <Text style={[styles.cardTamilTitleText, { color: show.tamilColor || '#818cf8' }]} numberOfLines={1}>
-                      {show.tamilTitle}
+                {/* Top row: Channel Badge + Air Slot */}
+                <View style={styles.gridCardTopRow}>
+                  <View style={styles.gridPill}>
+                    <Ionicons 
+                      name={show.channelCode === 'sun' ? 'sunny' : show.channelCode === 'vijay' ? 'star' : 'tv'} 
+                      size={scale(10)} 
+                      color={show.channelCode === 'sun' ? '#f59e0b' : show.channelCode === 'vijay' ? '#ef4444' : '#a855f7'} 
+                      style={{ marginRight: scale(4) }} 
+                    />
+                    <Text style={styles.gridPillText}>{show.channel}</Text>
+                  </View>
+                  <View style={[styles.gridPill, show.tag === 'Prime Show' ? { backgroundColor: 'rgba(239, 68, 68, 0.4)' } : null]}>
+                    <Text style={[styles.gridPillText, show.tag === 'Prime Show' ? { color: '#fca5a5', fontWeight: '800' } : null]}>
+                      {show.tag === 'Prime Show' ? 'Prime Show' : 'Weekend'}
                     </Text>
                   </View>
+                </View>
 
-                  {/* Bottom: Genre + Time Slot */}
-                  <View style={styles.cardBottomRow}>
-                    <Text style={styles.cardMetaLeft}>{show.genre}</Text>
-                    <Text style={styles.cardMetaRight}>{show.timeSlot}</Text>
+                {/* Center / Bottom: Title + Tamil Subtitle */}
+                <View style={styles.gridCardBottomContent}>
+                  <Text style={styles.gridCardTitleText} numberOfLines={1}>
+                    {show.title}
+                  </Text>
+                  <Text style={[styles.gridCardTamilTitleText, { color: show.tamilColor || '#818cf8' }]} numberOfLines={1}>
+                    {show.tamilTitle}
+                  </Text>
+                  <View style={styles.gridCardMetaRow}>
+                    <Text style={styles.gridCardMetaLeft}>{show.genre}</Text>
+                    <Text style={styles.gridCardMetaRight}>{show.timeSlot}</Text>
                   </View>
-                </LinearGradient>
+                </View>
               </ImageBackground>
             </Pressable>
           ))}
@@ -1587,50 +1656,53 @@ export default function TvSerialsScreen() {
             <Pressable
               key={prg.id}
               style={({ pressed }) => [
-                styles.serialCard,
-                { borderColor: prg.borderColor || '#38bdf8' },
-                pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
+                styles.serialGridCardWrapper,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }
               ]}
               hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
               onPress={() => handleOpenDetailScreen(prg)}
             >
               <ImageBackground
                 source={{ uri: prg.image }}
-                style={styles.cardImageBg}
-                imageStyle={styles.cardImageBgInner}
+                style={styles.serialGridCardBg}
+                imageStyle={styles.serialGridCardImageStyle}
                 resizeMode="cover"
               >
                 <LinearGradient
-                  colors={['rgba(15, 23, 42, 0.45)', 'rgba(15, 23, 42, 0.82)', '#090d16']}
-                  style={styles.cardGradientOverlay}
-                >
-                  {/* Top row: Channel Badge + Genre Tag */}
-                  <View style={styles.cardTopRow}>
-                    <View style={styles.channelBadgePill}>
-                      <ChannelLogo channelCode={prg.channelCode} size={scale(11)} style={{ marginRight: scale(4) }} />
-                      <Text style={styles.channelBadgeText}>{prg.channel}</Text>
-                    </View>
-                    <View style={styles.cardSlotBadge}>
-                      <Text style={styles.cardSlotBadgeText}>{prg.tag || 'Special'}</Text>
-                    </View>
-                  </View>
+                  colors={['rgba(15, 23, 42, 0.35)', 'rgba(15, 23, 42, 0.72)', '#090d16']}
+                  locations={[0, 0.5, 1]}
+                  style={StyleSheet.absoluteFillObject}
+                />
 
-                  {/* Center: Title + Tamil Subtitle */}
-                  <View style={styles.cardTitleContainer}>
-                    <Text style={styles.cardTitleText} numberOfLines={1}>
-                      {prg.title}
-                    </Text>
-                    <Text style={[styles.cardTamilTitleText, { color: prg.tamilColor || '#38bdf8' }]} numberOfLines={1}>
-                      {prg.tamilTitle}
-                    </Text>
+                {/* Top row: Channel Badge + Genre Tag */}
+                <View style={styles.gridCardTopRow}>
+                  <View style={styles.gridPill}>
+                    <Ionicons 
+                      name={prg.channelCode === 'sun' ? 'sunny' : prg.channelCode === 'vijay' ? 'star' : 'tv'} 
+                      size={scale(10)} 
+                      color={prg.channelCode === 'sun' ? '#f59e0b' : prg.channelCode === 'vijay' ? '#ef4444' : '#a855f7'} 
+                      style={{ marginRight: scale(4) }} 
+                    />
+                    <Text style={styles.gridPillText}>{prg.channel}</Text>
                   </View>
+                  <View style={styles.gridPill}>
+                    <Text style={styles.gridPillText}>{prg.tag || 'Special'}</Text>
+                  </View>
+                </View>
 
-                  {/* Bottom: Genre + Air time */}
-                  <View style={styles.cardBottomRow}>
-                    <Text style={styles.cardMetaLeft}>{prg.genre}</Text>
-                    <Text style={styles.cardMetaRight}>{prg.timeSlot}</Text>
+                {/* Bottom: Title + Tamil Subtitle */}
+                <View style={styles.gridCardBottomContent}>
+                  <Text style={styles.gridCardTitleText} numberOfLines={1}>
+                    {prg.title}
+                  </Text>
+                  <Text style={[styles.gridCardTamilTitleText, { color: prg.tamilColor || '#38bdf8' }]} numberOfLines={1}>
+                    {prg.tamilTitle}
+                  </Text>
+                  <View style={styles.gridCardMetaRow}>
+                    <Text style={styles.gridCardMetaLeft}>{prg.genre}</Text>
+                    <Text style={styles.gridCardMetaRight}>{prg.timeSlot || 'Weekly'}</Text>
                   </View>
-                </LinearGradient>
+                </View>
               </ImageBackground>
             </Pressable>
           ))}
@@ -1651,7 +1723,7 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#090d16',
   },
   scrollContent: {
     paddingBottom: verticalScale(90),
@@ -2090,7 +2162,7 @@ const styles = StyleSheet.create({
     marginBottom: verticalScale(10),
   },
 
-  // Step 1: Server Buttons (Channels removed!)
+  // Step 1: Server Buttons (Server 1 & Server 2)
   serversRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2112,18 +2184,18 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   serverSelectButtonInactive: {
-    backgroundColor: '#f1f5f9',
-    borderColor: '#f1f5f9',
+    backgroundColor: '#f8fafc',
+    borderColor: '#cbd5e1',
   },
   serverSelectButtonText: {
-    fontSize: moderateScale(12.5),
+    fontSize: moderateScale(13),
     fontWeight: '800',
   },
   serverSelectButtonTextActive: {
     color: '#ffffff',
   },
   serverSelectButtonTextInactive: {
-    color: '#1f2937',
+    color: '#1e293b',
   },
 
   // Step 2: Dropdown Selector
@@ -2131,7 +2203,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1.2,
+    borderColor: '#cbd5e1',
     borderRadius: scale(10),
     paddingVertical: verticalScale(12),
     paddingHorizontal: scale(14),
@@ -2143,7 +2217,7 @@ const styles = StyleSheet.create({
   },
   dropdownSelectedText: {
     color: '#111827',
-    fontSize: moderateScale(13),
+    fontSize: moderateScale(13.5),
     fontWeight: '700',
     flex: 1,
   },
@@ -2168,6 +2242,8 @@ const styles = StyleSheet.create({
     borderRadius: scale(8),
     paddingVertical: verticalScale(4),
     paddingHorizontal: scale(8),
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   monthNavBtn: {
     padding: scale(4),
@@ -2180,15 +2256,21 @@ const styles = StyleSheet.create({
   },
   calendarCard: {
     borderWidth: 1,
-    borderColor: '#f1f5f9',
+    borderColor: '#e2e8f0',
     borderRadius: scale(12),
-    padding: scale(8),
+    padding: scale(10),
     backgroundColor: '#ffffff',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
   },
   calendarWeekRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: verticalScale(6),
+    justifyContent: 'space-between',
+    marginBottom: verticalScale(8),
+    paddingHorizontal: scale(2),
   },
   calendarWeekCell: {
     flex: 1,
@@ -2196,30 +2278,42 @@ const styles = StyleSheet.create({
   },
   calendarWeekText: {
     color: '#6b7280',
-    fontSize: moderateScale(11.5),
+    fontSize: moderateScale(12),
     fontWeight: '700',
   },
-  calendarDaysGrid: {
+  calendarRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: verticalScale(5),
   },
   emptyGridCell: {
-    height: verticalScale(36),
+    flex: 1,
+    marginHorizontal: scale(2),
+    height: verticalScale(38),
   },
   gridDayCell: {
-    height: verticalScale(36),
+    flex: 1,
+    height: verticalScale(38),
+    marginHorizontal: scale(2),
     justifyContent: 'center',
     alignItems: 'center',
-    marginVertical: verticalScale(2),
     borderRadius: scale(8),
     backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   gridDayCellActive: {
     backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+    elevation: 3,
+    shadowColor: '#2563eb',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
   },
   gridDayText: {
-    color: '#1f2937',
-    fontSize: moderateScale(12),
+    color: '#1e293b',
+    fontSize: moderateScale(13),
     fontWeight: '700',
   },
   gridDayTextActive: {
@@ -2334,275 +2428,263 @@ const styles = StyleSheet.create({
   },
 
   // -------------------------------------------------------------
-  // HOME PAGE STYLES (CONSTANT FIXED HERO CARD SIZE)
+  // HOME PAGE STYLES (PIXEL-PERFECT MATCHING USER REFERENCE DESIGN)
   // -------------------------------------------------------------
   heroOuterWrapper: {
-    paddingHorizontal: scale(10),
-    paddingTop: verticalScale(8),
-    paddingBottom: verticalScale(6),
-    backgroundColor: '#060912',
+    paddingHorizontal: scale(14),
+    marginTop: verticalScale(8),
+    marginBottom: verticalScale(12),
   },
   heroCard: {
-    height: verticalScale(215), // INCREASED HEIGHT TO ADOPT POSTER IMAGE
-    minHeight: verticalScale(215),
-    maxHeight: verticalScale(215),
     borderRadius: scale(18),
-    paddingHorizontal: scale(16),
-    paddingTop: verticalScale(12),
-    paddingBottom: verticalScale(12),
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
     overflow: 'hidden',
+    padding: scale(14),
+    minHeight: verticalScale(195),
     justifyContent: 'space-between',
     backgroundColor: '#0b1222',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
   },
-  heroCardImage: {
+  heroCardImageStyle: {
     borderRadius: scale(18),
-    opacity: 0.85,
   },
   heroHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    height: verticalScale(30),
-    zIndex: 2,
+    marginBottom: verticalScale(6),
   },
-  networkBadgePill: {
+  heroPrimeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2563eb',
-    paddingVertical: verticalScale(3),
+    backgroundColor: '#1d4ed8',
+    paddingVertical: verticalScale(4),
     paddingHorizontal: scale(10),
-    borderRadius: scale(18),
+    borderRadius: scale(14),
   },
-  networkBadgeText: {
+  heroPrimeBadgeText: {
     color: '#ffffff',
-    fontSize: moderateScale(10),
-    fontWeight: '900',
-    letterSpacing: 0.6,
+    fontSize: moderateScale(11),
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   pauseCircleBtn: {
     width: scale(30),
     height: scale(30),
     borderRadius: scale(15),
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   heroMainRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    flex: 1,
-    zIndex: 2,
+    justifyContent: 'space-between',
   },
   heroInfoColumn: {
     flex: 1,
-    paddingRight: scale(12),
-    justifyContent: 'center',
+    paddingRight: scale(10),
   },
   heroTitle: {
     color: '#ffffff',
-    fontSize: moderateScale(19),
+    fontSize: moderateScale(22),
     fontWeight: '900',
     letterSpacing: -0.3,
-    textShadowColor: 'rgba(0, 0, 0, 0.75)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
   },
   heroTamilTitle: {
-    color: '#f59e0b',
-    fontSize: moderateScale(14),
+    color: '#eab308',
+    fontSize: moderateScale(16),
     fontWeight: '800',
-    marginTop: verticalScale(1),
-    marginBottom: verticalScale(4),
+    marginTop: verticalScale(2),
   },
   heroMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: verticalScale(8),
-    gap: scale(8),
+    marginTop: verticalScale(6),
+    marginBottom: verticalScale(10),
   },
   heroTimeSlotBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     paddingVertical: verticalScale(3),
     paddingHorizontal: scale(8),
     borderRadius: scale(10),
+    marginRight: scale(6),
   },
   heroTimeSlotText: {
     color: '#e2e8f0',
     fontSize: moderateScale(10.5),
     fontWeight: '700',
   },
-  heroTagBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.18)',
-    paddingVertical: verticalScale(3),
+  heroCategoryPill: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    paddingVertical: verticalScale(2.5),
     paddingHorizontal: scale(8),
     borderRadius: scale(10),
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.35)',
   },
-  heroTagBadgeText: {
+  heroCategoryPillText: {
     color: '#38bdf8',
-    fontSize: moderateScale(10),
-    fontWeight: '800',
-  },
-  heroActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    fontSize: moderateScale(10.5),
+    fontWeight: '700',
   },
   quickPlayButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#2563eb',
-    paddingVertical: verticalScale(6.5),
-    paddingHorizontal: scale(15),
+    paddingVertical: verticalScale(8),
+    paddingHorizontal: scale(14),
     borderRadius: scale(20),
-    marginRight: scale(10),
-    elevation: 4,
-    shadowColor: '#2563eb',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 4,
+    alignSelf: 'flex-start',
   },
   quickPlayText: {
     color: '#ffffff',
-    fontSize: moderateScale(11.5),
+    fontSize: moderateScale(12),
     fontWeight: '800',
   },
-  heroPosterCardContainer: {
+  heroPipContainer: {
+    width: scale(96),
+    height: scale(110),
     justifyContent: 'center',
     alignItems: 'center',
   },
-  heroPosterCardFrame: {
+  heroPipCard: {
     width: scale(96),
-    height: verticalScale(126),
+    height: scale(110),
     borderRadius: scale(14),
     overflow: 'hidden',
     borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    backgroundColor: '#0f172a',
-    elevation: 8,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
     position: 'relative',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
+    backgroundColor: '#111827',
   },
-  heroPosterCardImage: {
+  heroPipImage: {
     width: '100%',
     height: '100%',
   },
-  heroLiveBadge: {
+  heroPipHdBadge: {
     position: 'absolute',
-    top: scale(6),
-    right: scale(6),
+    top: scale(5),
+    right: scale(5),
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    paddingVertical: verticalScale(2),
-    paddingHorizontal: scale(6),
+    paddingHorizontal: scale(5),
+    paddingVertical: verticalScale(1.5),
     borderRadius: scale(8),
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
-  heroLiveBadgeText: {
-    color: '#22c55e',
+  heroPipGreenDot: {
+    width: scale(5),
+    height: scale(5),
+    borderRadius: scale(2.5),
+    backgroundColor: '#22c55e',
+    marginRight: scale(3),
+  },
+  heroPipHdText: {
+    color: '#ffffff',
     fontSize: moderateScale(8.5),
     fontWeight: '900',
-    marginLeft: scale(3),
   },
-  liveStatusDot: {
-    width: scale(6.5),
-    height: scale(6.5),
-    borderRadius: scale(3.25),
-    backgroundColor: '#22c55e',
-  },
-
   paginationRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: scale(6),
+    justifyContent: 'flex-start',
+    marginTop: verticalScale(10),
   },
-  paginationDot: {
-    height: verticalScale(4.5),
-    borderRadius: scale(2.25),
-  },
-  paginationDotActive: {
+  paginationPillActive: {
     width: scale(20),
-    backgroundColor: '#3b82f6',
+    height: scale(4.5),
+    borderRadius: scale(2.5),
+    backgroundColor: '#38bdf8',
+    marginRight: scale(5),
   },
   paginationDotInactive: {
-    width: scale(6),
-    backgroundColor: '#475569',
+    width: scale(4.5),
+    height: scale(4.5),
+    borderRadius: scale(2.5),
+    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    marginRight: scale(5),
   },
 
-  // Broadcasters Row (Home)
+  // Primary Broadcasters Row (Home)
   sectionHeaderRow: {
     paddingHorizontal: scale(14),
     marginTop: verticalScale(14),
-    marginBottom: verticalScale(10),
+    marginBottom: verticalScale(8),
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  liveScraperChip: {
-    backgroundColor: '#0f172a',
-    paddingHorizontal: scale(8),
-    paddingVertical: verticalScale(3),
-    borderRadius: scale(12),
-    borderWidth: 1,
-    borderColor: 'rgba(34, 197, 94, 0.4)',
-  },
-  liveScraperChipText: {
-    color: '#4ade80',
-    fontSize: moderateScale(9.5),
-    fontWeight: '800',
-  },
   sectionTitleWithIcon: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   sectionHeaderTitle: {
-    color: '#1f2937',
-    fontSize: moderateScale(14),
+    color: '#ffffff',
+    fontSize: moderateScale(14.5),
     fontWeight: '800',
-    letterSpacing: -0.2,
   },
-  broadcastersScrollContent: {
+  liveSyncedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingVertical: verticalScale(3),
+    paddingHorizontal: scale(8),
+    borderRadius: scale(12),
+  },
+  liveSyncedText: {
+    color: '#4ade80',
+    fontSize: moderateScale(10.5),
+    fontWeight: '800',
+  },
+  broadcastersRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     paddingHorizontal: scale(14),
-    gap: scale(10),
+    marginTop: verticalScale(4),
+    gap: scale(8),
   },
-  broadcasterPill: {
+  whiteBroadcasterCard: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ffffff',
-    paddingVertical: verticalScale(7),
-    paddingHorizontal: scale(14),
-    borderRadius: scale(12),
-    borderWidth: 1.2,
-    borderColor: '#e5e7eb',
-    elevation: 1,
+    paddingVertical: verticalScale(10),
+    paddingHorizontal: scale(8),
+    borderRadius: scale(14),
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  broadcasterPillSelected: {
-    backgroundColor: '#dbeafe',
+  whiteBroadcasterCardSelected: {
     borderColor: '#2563eb',
+    borderWidth: 2,
+    backgroundColor: '#f0f7ff',
   },
-  broadcasterNamesWrapper: {
+  broadcasterCardIconWrap: {
+    marginRight: scale(6),
+  },
+  broadcasterCardTextWrap: {
+    flex: 1,
     justifyContent: 'center',
   },
-  broadcasterName: {
-    color: '#111827',
-    fontSize: moderateScale(12),
+  broadcasterCardName: {
+    color: '#0f172a',
+    fontSize: moderateScale(12.5),
     fontWeight: '800',
   },
-  broadcasterTamilName: {
-    color: '#6b7280',
-    fontSize: moderateScale(9.5),
+  broadcasterCardTamilName: {
+    color: '#64748b',
+    fontSize: moderateScale(10),
     fontWeight: '600',
     marginTop: verticalScale(1),
   },
@@ -2612,89 +2694,76 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    paddingHorizontal: scale(12),
-    rowGap: verticalScale(10),
+    paddingHorizontal: scale(14),
+    marginTop: verticalScale(6),
   },
-  serialCard: {
-    width: (windowWidth - scale(32)) / 2,
-    borderRadius: scale(14),
-    borderWidth: 1.2,
+  serialGridCardWrapper: {
+    width: (windowWidth - scale(28) - scale(10)) / 2,
+    height: verticalScale(175),
+    borderRadius: scale(16),
     overflow: 'hidden',
-    backgroundColor: '#0f172a',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    marginBottom: verticalScale(12),
+    borderWidth: 1.2,
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    elevation: 4,
+    backgroundColor: '#0b1222',
   },
-  cardImageBg: {
-    width: '100%',
-  },
-  cardImageBgInner: {
-    borderRadius: scale(13),
-  },
-  cardGradientOverlay: {
-    padding: scale(10),
+  serialGridCardBg: {
+    flex: 1,
     justifyContent: 'space-between',
-    minHeight: verticalScale(124),
   },
-  cardTopRow: {
+  serialGridCardImageStyle: {
+    borderRadius: scale(16),
+  },
+  gridCardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    padding: scale(8),
   },
-  channelBadgePill: {
+  gridPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    paddingVertical: verticalScale(2),
-    paddingHorizontal: scale(7),
-    borderRadius: scale(6),
-  },
-  channelBadgeText: {
-    color: '#f3f4f6',
-    fontSize: moderateScale(9.5),
-    fontWeight: '700',
-  },
-  cardSlotBadge: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     paddingVertical: verticalScale(2),
     paddingHorizontal: scale(6),
-    borderRadius: scale(6),
+    borderRadius: scale(8),
   },
-  cardSlotBadgeText: {
-    color: '#93c5fd',
-    fontSize: moderateScale(9),
+  gridPillText: {
+    color: '#e2e8f0',
+    fontSize: moderateScale(9.5),
     fontWeight: '700',
   },
-  cardTitleContainer: {
-    marginVertical: verticalScale(8),
+  gridCardBottomContent: {
+    padding: scale(8),
   },
-  cardTitleText: {
+  gridCardTitleText: {
     color: '#ffffff',
-    fontSize: moderateScale(13.5),
-    fontWeight: '900',
-    letterSpacing: -0.2,
-  },
-  cardTamilTitleText: {
-    fontSize: moderateScale(11),
+    fontSize: moderateScale(14),
     fontWeight: '800',
-    marginTop: verticalScale(2),
   },
-  cardBottomRow: {
+  gridCardTamilTitleText: {
+    color: '#38bdf8',
+    fontSize: moderateScale(12),
+    fontWeight: '700',
+    marginTop: verticalScale(1),
+  },
+  gridCardMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: verticalScale(6),
+    marginTop: verticalScale(4),
   },
-  cardMetaLeft: {
+  gridCardMetaLeft: {
     color: '#94a3b8',
-    fontSize: moderateScale(9.5),
+    fontSize: moderateScale(10),
     fontWeight: '600',
   },
-  cardMetaRight: {
+  gridCardMetaRight: {
     color: '#94a3b8',
-    fontSize: moderateScale(9.5),
+    fontSize: moderateScale(10),
     fontWeight: '600',
   },
 
@@ -2702,14 +2771,13 @@ const styles = StyleSheet.create({
   realityHeaderWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: verticalScale(20),
-    marginBottom: verticalScale(10),
+    marginTop: verticalScale(18),
+    marginBottom: verticalScale(8),
   },
   sectionHeaderTitleCentered: {
-    color: '#1f2937',
-    fontSize: moderateScale(14),
+    color: '#ffffff',
+    fontSize: moderateScale(15),
     fontWeight: '800',
-    letterSpacing: -0.2,
   },
 
   // Active Server Scraper Metadata Query Bar & VLC Engine Badge
