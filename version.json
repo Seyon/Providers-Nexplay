@@ -1,15 +1,23 @@
 {
   "major": 1,
   "minor": 7,
-  "patch": 13,
+  "patch": 14,
   "issue": 0,
-  "build": 138,
+  "build": 139,
   "updateType": "patch",
-  "timestamp": "20260928",
-  "versionName": "1.7.13.0.138-patch.20260928",
-  "versionCode": 1830138,
-  "lastSuccessfulBuild": "2026-09-28T17:37:41.042Z",
+  "timestamp": "20261006",
+  "versionName": "1.7.14.0.139-patch.20261006",
+  "versionCode": 1840139,
+  "lastSuccessfulBuild": "2026-10-06T13:16:08.070Z",
   "history": [
+    {
+      "versionName": "1.7.14.0.139-patch.20261006",
+      "versionCode": 1840139,
+      "updateType": "patch",
+      "build": 139,
+      "note": "Live TV & Serials UI overhaul, TMDB key validation & persistence, aligned navbar",
+      "builtAt": "2026-10-06T13:16:08.070Z"
+    },
     {
       "versionName": "1.7.13.0.138-patch.20260928",
       "versionCode": 1830138,
