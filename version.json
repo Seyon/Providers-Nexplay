@@ -1,15 +1,23 @@
 {
   "major": 1,
-  "minor": 7,
-  "patch": 17,
-  "issue": 2,
-  "build": 143,
-  "updateType": "bugfix",
-  "timestamp": "20261007",
-  "versionName": "1.7.17.2.143-bugfix.20261007",
-  "versionCode": 1870143,
-  "lastSuccessfulBuild": "2026-10-07T18:07:33.009Z",
+  "minor": 8,
+  "patch": 0,
+  "issue": 0,
+  "build": 144,
+  "updateType": "minor",
+  "timestamp": "20261010",
+  "versionName": "1.8.0.0.144-minor.20261010",
+  "versionCode": 1800144,
+  "lastSuccessfulBuild": "2026-10-10T16:33:15.141Z",
   "history": [
+    {
+      "versionName": "1.8.0.0.144-minor.20261010",
+      "versionCode": 1800144,
+      "updateType": "minor",
+      "build": 144,
+      "note": "Added Server 5 Netmirror, fixed Server 2 4KHDHub streams, reordered servers, removed download section",
+      "builtAt": "2026-10-10T16:33:15.141Z"
+    },
     {
       "versionName": "1.7.17.2.143-bugfix.20261007",
       "versionCode": 1870143,
