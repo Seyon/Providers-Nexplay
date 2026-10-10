@@ -59,11 +59,9 @@ export class Provider111477Client {
           headers: this.headers
         });
 
-        if (res.status === 429) {
-          const retryAfterSec = parseInt(res.headers.get('retry-after') || '2', 10);
-          console.warn(`[Provider111477] 429 Rate limited on ${url}, backing off for ${retryAfterSec}s...`);
-          await sleep((retryAfterSec || 2) * 1000);
-          continue;
+        if (res.status === 429 || res.status === 403) {
+          console.warn(`[Provider111477] Cloudflare rate limited/challenged (${res.status}) on ${url}.`);
+          return null;
         }
 
         if (res.status === 404) {
@@ -84,6 +82,38 @@ export class Provider111477Client {
       }
     }
     return null;
+  }
+
+  /**
+   * Probe whether a stream URL is reachable and returning video content,
+   * detecting Cloudflare Turnstile bot challenges (403/Challenge) and rate limits.
+   */
+  async isStreamPlayable(url, referer) {
+    if (!url) return false;
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 3500) : null;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': DEFAULT_USER_AGENT,
+          'Referer': referer || this.baseUrl,
+          'Range': 'bytes=0-1024'
+        },
+        signal: controller ? controller.signal : undefined
+      });
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (res.status === 403 || res.status === 429) return false;
+      const cType = (res.headers.get('content-type') || '').toLowerCase();
+      const cfMitigated = res.headers.get('cf-mitigated');
+      if (cfMitigated === 'challenge' || cType.includes('text/html')) {
+        return false;
+      }
+      return (res.status === 200 || res.status === 206);
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -545,6 +575,14 @@ export class Provider111477Client {
         thumbnail: details.thumbnail,
         backupStreams: videoFiles.filter(f => f.url !== bestStream.url)
       };
+    }
+
+    if (result && result.streamUrl) {
+      const isPlayable = await this.isStreamPlayable(result.streamUrl, result.headers?.Referer);
+      if (!isPlayable) {
+        console.warn(`[Provider111477] 111477 stream URL is blocked (Cloudflare 403/Challenge): ${result.streamUrl}`);
+        throw new Error(`[Provider111477] Stream blocked by Cloudflare (403 Challenge) on ${this.baseUrl}`);
+      }
     }
 
     if (result && this.streamCache) {

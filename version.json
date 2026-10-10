@@ -1,15 +1,39 @@
 {
   "major": 1,
   "minor": 7,
-  "patch": 15,
-  "issue": 0,
-  "build": 140,
-  "updateType": "patch",
-  "timestamp": "20261006",
-  "versionName": "1.7.15.0.140-patch.20261006",
-  "versionCode": 1850140,
-  "lastSuccessfulBuild": "2026-10-06T14:33:27.671Z",
+  "patch": 17,
+  "issue": 2,
+  "build": 143,
+  "updateType": "bugfix",
+  "timestamp": "20261007",
+  "versionName": "1.7.17.2.143-bugfix.20261007",
+  "versionCode": 1870143,
+  "lastSuccessfulBuild": "2026-10-07T18:07:33.009Z",
   "history": [
+    {
+      "versionName": "1.7.17.2.143-bugfix.20261007",
+      "versionCode": 1870143,
+      "updateType": "bugfix",
+      "build": 143,
+      "note": "Fix Server 4 black screen and seek loading",
+      "builtAt": "2026-10-07T18:07:33.009Z"
+    },
+    {
+      "versionName": "1.7.17.0.142-patch.20261007",
+      "versionCode": 1870142,
+      "updateType": "patch",
+      "build": 142,
+      "note": "Server 5 (Netmirror) direct TMDB-based scraper integration",
+      "builtAt": "2026-10-07T15:20:00.000Z"
+    },
+    {
+      "versionName": "1.7.16.0.141-patch.20261006",
+      "versionCode": 1860141,
+      "updateType": "patch",
+      "build": 141,
+      "note": "Ultra low-latency VLC playback and parallel scraper acceleration",
+      "builtAt": "2026-10-06T15:10:15.709Z"
+    },
     {
       "versionName": "1.7.15.0.140-patch.20261006",
       "versionCode": 1850140,
