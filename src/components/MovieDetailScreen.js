@@ -27,7 +27,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import * as Brightness from 'expo-brightness';
 import { useKeepAwake, activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { scale, verticalScale, moderateScale } from '../utils/responsive';
+import { scale, verticalScale, moderateScale, SCREEN_WIDTH, SCREEN_HEIGHT } from '../utils/responsive';
 import { 
   getPosterUrl, 
   getBackdropUrl, 
@@ -42,7 +42,7 @@ import {
   getWriters
 } from '../utils/api';
 import { ExtensionManager } from '../utils/ExtensionManager';
-import { DownloadManager } from '../utils/DownloadManager';
+import { saveWatchProgress } from '../utils/AppSettings';
 
 // Safe URL sanitizer for Media3 ExoPlayer:
 // Preserves AWS/Cloudflare R2 presigned URLs (%2F in credentials must NOT become %252F)
@@ -155,26 +155,36 @@ const getDeduplicatedSubtitleTracks = (tracks = []) => {
 export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const topNotchPadding = Math.max(insets.top, StatusBar.currentHeight || 0, 10);
+  const statusBarHeight = Math.max(insets.top, StatusBar.currentHeight || 0, 24);
+  const topNotchPadding = statusBarHeight + verticalScale(4);
 
   // Dynamic Layout Measurement State
   const [playerLayout, setPlayerLayout] = useState({ width: windowWidth, height: (windowWidth * 9) / 16 });
   const [scrubberWidth, setScrubberWidth] = useState(0);
 
-  // Determine if TV Show (Strictly check media_type and prevent movie titles from false-positive series detection)
-  const isTVShow = movie.media_type === 'tv' ? true :
-                   movie.media_type === 'movie' ? false :
-                   (Boolean(movie.number_of_seasons) && !movie.title) ||
-                   (Boolean(movie.first_air_date) && !movie.release_date && !movie.title);
-
   // TMDB Dynamic Details State
   const [details, setDetails] = useState(movie);
   const [loadingDetails, setLoadingDetails] = useState(true);
+
+  // Determine if TV Show (Strictly check media_type and prevent movie titles from false-positive series detection)
+  const isTVShow = (movie?.media_type === 'tv' || details?.media_type === 'tv') ? true :
+                   (movie?.media_type === 'movie' || details?.media_type === 'movie') ? false :
+                   (Boolean(movie?.number_of_seasons || details?.number_of_seasons) && !movie?.title && !details?.title) ||
+                   (Boolean(movie?.first_air_date || details?.first_air_date) && !movie?.release_date && !details?.release_date && !movie?.title && !details?.title);
+
   const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [cast, setCast] = useState([]);
   const [crew, setCrew] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [activeDetailTab, setActiveDetailTab] = useState(isTVShow ? 'episodes' : 'details'); // 'episodes' | 'details' | 'more'
+
+  // Ensure activeDetailTab is never 'episodes' for movies
+  useEffect(() => {
+    if (!isTVShow && activeDetailTab === 'episodes') {
+      setActiveDetailTab('details');
+    }
+  }, [isTVShow, movie?.id]);
 
   // Seasons & Episodes State (for TV Series)
   const [seasons, setSeasons] = useState([]);
@@ -189,6 +199,19 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
   const [hasFirstFrameRendered, setHasFirstFrameRendered] = useState(false);
+
+  // Automatically record watch history / continue watching when playback is active
+  useEffect(() => {
+    if (isPlaying && (movie?.id || details?.id)) {
+      const activeItem = details?.id ? details : movie;
+      saveWatchProgress(
+        activeItem,
+        duration > 0 ? (currentTime / duration) * 100 : 35,
+        isTVShow ? `S${selectedSeason || 1} • In Progress` : (formatRuntime(activeItem?.runtime) || 'In Progress')
+      );
+    }
+  }, [isPlaying, movie?.id, details?.id]);
+
   const [isBuffering, setIsBuffering] = useState(false);
   const isBufferingRef = useRef(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -386,6 +409,22 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       deactivateKeepAwake('NexPlayPlaybackWakeLock').catch(() => {});
     };
   }, [isPlaying, hasStartedPlayback]);
+
+  // Adaptive Recovery Watchdog: if playback initiated but 0 frames rendered after 30s and not actively buffering
+  useEffect(() => {
+    if (!hasStartedPlayback || isResolving || playbackError) return;
+    const watchdogTimer = setTimeout(() => {
+      if (!hasFirstFrameRendered && !isBufferingRef.current && currentTimeRef.current <= 0 && isMounted.current) {
+        console.warn(`[MovieDetailScreen] Stream stalled: 0 frames rendered after 30s on Server ${activeServer}.`);
+        setPlaybackError({
+          title: 'Stream Unreachable',
+          message: `Server ${activeServer} connection returned no video/audio. Switching to an alternate server is recommended.`,
+          server: activeServer
+        });
+      }
+    }, 30000);
+    return () => clearTimeout(watchdogTimer);
+  }, [hasStartedPlayback, isResolving, hasFirstFrameRendered, activeServer, currentSourceUri, playbackError]);
   useEffect(() => {
     isMounted.current = true;
     return () => {
@@ -498,21 +537,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const [resolvedQualitySizes, setResolvedQualitySizes] = useState({});
   const [qualityMode, setQualityMode] = useState('auto'); // 'auto' (ABR) | '1080p' | '4k' | '720p'
   const [currentQuality, setCurrentQuality] = useState('1080p');
-  const [isDownloadModalVisible, setIsDownloadModalVisible] = useState(false);
-  const [isScrapingForDownload, setIsScrapingForDownload] = useState(false);
-  const [activeDownloads, setActiveDownloads] = useState([]);
   const [abrNotice, setAbrNotice] = useState(null);
   const abrNoticeAnim = useRef(new Animated.Value(0)).current;
   const abrTimeoutRef = useRef(null);
-
-  useEffect(() => {
-    const unsub = DownloadManager.subscribe((items) => {
-      setActiveDownloads(items);
-    });
-    return () => {
-      if (unsub) unsub();
-    };
-  }, []);
 
   // ABR Adaptation Tracker Refs
   const stallsHistoryRef = useRef([]);
@@ -545,12 +572,11 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     }, 3500);
   };
 
-  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u), Server 4 (111477)
+  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u)
   const servers = [
     { id: 1, label: 'Server 1', short: 'Server 1', desc: 'HDHub4u Direct Stream' },
     { id: 2, label: 'Server 2', short: 'Server 2', desc: '4KHDHub Ultra & HD Stream' },
     { id: 3, label: 'Server 3', short: 'Server 3', desc: 'Movies4u Direct Stream' },
-    { id: 4, label: 'Server 4', short: 'Server 4', desc: '111477 Direct Stream' },
   ];
 
   // Current selected episode / media item
@@ -583,6 +609,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     if (hasUserManuallySelectedAudioTrack.current) return;
     if (hasAutoSelectedDefaultAudio.current) return;
 
+    hasAutoSelectedDefaultAudio.current = true;
+
     // Use TMDB API metadata for officially released language
     const optimalTrack = selectOptimalDefaultAudioTrack(tracks, {
       ...details,
@@ -595,13 +623,15 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
 
     if (optimalTrack) {
       console.log('[MovieDetailScreen] Auto-selected optimal audio track based on TMDB metadata:', optimalTrack);
-      hasAutoSelectedDefaultAudio.current = true;
       setSelectedAudioTrack(optimalTrack);
       selectedAudioTrackRef.current = optimalTrack;
       const tId = typeof optimalTrack.trackId === 'number'
         ? optimalTrack.trackId
         : (typeof optimalTrack.id === 'number' ? optimalTrack.id : parseInt(optimalTrack.id, 10));
-      if (!isNaN(tId) && tId !== -1) {
+      // In LibVLC, track 0 is selected by default on playback start.
+      // Only invoke selectAudioTrack if there are multiple tracks and optimal is NOT the first track,
+      // avoiding redundant demuxer flushing and audio stutter.
+      if (!isNaN(tId) && tId !== -1 && tracks.length > 1 && tId !== tracks[0].trackId) {
         vlcPlayerRef.current?.selectAudioTrack(tId);
       }
     }
@@ -780,45 +810,24 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const vlcSource = useMemo(() => {
     if (!currentSourceUri) return undefined;
     const mediaOptions = [
-      ':network-caching=250',
-      ':live-caching=250',
-      ':file-caching=250',
-      ':sout-mux-caching=250',
-      ':clock-jitter=0',
-      ':clock-synchro=0',
-      ':avcodec-fast=true',
-      ':avcodec-threads=4',
-      ':no-sub-autodetect-file',
+      ':network-caching=3000',
+      ':file-caching=3000',
+      ':live-caching=3000',
       ':http-reconnect=true',
-      ':http-continuous=true',
+      ':no-sub-autodetect-file',
       ':no-stats'
     ];
 
-    const initOptions = [
-      '--network-caching=250',
-      '--live-caching=250',
-      '--file-caching=250',
-      '--clock-jitter=0',
-      '--clock-synchro=0',
-      '--drop-late-frames',
-      '--skip-frames',
-      '--no-sub-autodetect-file',
-      '--no-stats',
-      '--avcodec-fast',
-      '--no-audio-time-stretch',
-      '--ipv4-timeout=1500'
-    ];
+    const initOptions = [];
 
     const ref = currentSourceHeaders?.Referer || currentSourceHeaders?.referer || '';
     if (ref) {
       mediaOptions.push(`:http-referrer=${ref}`);
-      initOptions.push(`--http-referrer=${ref}`);
     }
 
     const ua = currentSourceHeaders?.['User-Agent'] || currentSourceHeaders?.['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
     if (ua) {
       mediaOptions.push(`:http-user-agent=${ua}`);
-      initOptions.push(`--http-user-agent=${ua}`);
     }
 
     return {
@@ -941,9 +950,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     !isResolving &&
     !playbackError &&
     (
+      isBuffering ||
       isSeekingRef.current ||
-      !hasFirstFrameRendered ||
-      (isBuffering && !isPlaying)
+      pendingSeekTimeRef.current !== null ||
+      !hasFirstFrameRendered
     )
   );
 
@@ -967,6 +977,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
         player.pause();
       } catch (e) {}
     }
+    lastSavedSeekTimeRef.current = 0;
     hasAutoSelectedDefaultAudio.current = false;
     hasUserManuallySelectedAudioTrack.current = false;
     setSelectedAudioTrack(null);
@@ -978,31 +989,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     setDuration(0);
     setHasFirstFrameRendered(false);
     setHasStartedPlayback(true);
+    setIsFullscreen(false);
     setIsBuffering(true);
     isBufferingRef.current = true;
 
-    // Offline local media check (Direct offline playback without internet)
-    if (movie?.isOffline && movie?.localFileUri) {
-      console.log(`[MovieDetailScreen] ⚡ Playing offline downloaded media file: ${movie.localFileUri}`);
-      setIsResolving(false);
-      isResolvingRef.current = false;
-      setHasStartedPlayback(true);
-      setControlsVisible(true);
-      resetControlsTimeout();
-      if (player) {
-        try {
-          await player.replaceAsync({
-            uri: movie.localFileUri,
-            contentType: 'auto'
-          });
-          player.play();
-          setIsPlaying(true);
-        } catch (err) {
-          console.warn('[MovieDetailScreen] Error playing offline file:', err);
-        }
-      }
-      return;
-    }
 
     const targetSeason = episode?.seasonNumber || selectedSeason || 1;
     const targetEpisodeNum = episode?.episodeNumber || 1;
@@ -1027,13 +1017,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       // Server 1: strictly hdhub4u
       // Server 2: strictly 4khdhub
       // Server 3: strictly movies4u
-      // Server 4: strictly 111477
       let providerValue = 'hdhub4u';
       let providerLabel = 'Server 1 (HDHub4u)';
-      if (server === 4) {
-        providerValue = '111477';
-        providerLabel = 'Server 4 (111477)';
-      } else if (server === 3) {
+      if (server === 3) {
         providerValue = 'movies4u';
         providerLabel = 'Server 3 (Movies4u)';
       } else if (server === 2) {
@@ -1066,7 +1052,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
           episodeNumber: targetEpisodeNum,
           originalLanguage: origLang,
           isIndianRegion: isIndianContent,
-          allowCrossProviderFallback: true
+          allowCrossProviderFallback: true,
+          tmdbId: details?.id || movie?.id,
+          movie,
+          details
         });
       } catch (e) {
         console.log(`[MovieDetailScreen] Primary Vega resolution note:`, e?.message || e);
@@ -1320,69 +1309,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     }
   };
 
-  // Open Download Quality Modal & Scrape Available Media Sizes
-  const handleDownloadButtonPress = async () => {
-    setIsDownloadModalVisible(true);
-    if (!resolvedQualities || Object.keys(resolvedQualities).length === 0) {
-      setIsScrapingForDownload(true);
-      try {
-        const origLang = (details.original_language || movie.original_language || '').toLowerCase();
-        const originCountries = (details.origin_country || movie.origin_country || []);
-        const prodCountries = (details.production_countries || []).map(c => c.iso_3166_1);
-        const INDIAN_LANGS = ['ta', 'hi', 'te', 'ml', 'kn', 'mr', 'pa', 'bn', 'gu', 'or', 'as'];
-        const isIndianContent = INDIAN_LANGS.includes(origLang) || originCountries.includes('IN') || prodCountries.includes('IN');
-        const targetSeason = currentEpisode?.seasonNumber || selectedSeason || 1;
-        const targetEpisodeNum = currentEpisode?.episodeNumber || 1;
-        const providerValue = activeServer === 4 ? '111477' : (activeServer === 3 ? 'movies4u' : (activeServer === 2 ? '4khdhub' : 'hdhub4u'));
 
-        const playable = await ExtensionManager.findAndResolvePlayableStream({
-          targetTitle: cleanTitle,
-          targetYear: releaseYear,
-          isTVShow,
-          seasonNumber: targetSeason,
-          episodeNumber: targetEpisodeNum,
-          provider: providerValue,
-          originalLanguage: origLang,
-          isIndianRegion: isIndianContent,
-          allowCrossProviderFallback: true
-        });
-
-        if (playable?.qualities && Object.keys(playable.qualities).length > 0) {
-          setResolvedQualities(playable.qualities);
-          setResolvedQualitySizes(playable.qualitySizes || {});
-        } else if (playable?.streamUrl) {
-          const q = (playable.streamUrl.includes('2160') || playable.streamUrl.includes('4k')) ? '4k' : (playable.streamUrl.includes('720') ? '720p' : '1080p');
-          setResolvedQualities({ [q]: playable.streamUrl });
-          setResolvedQualitySizes(playable.qualitySizes || {});
-        }
-      } catch (err) {
-        console.warn('[MovieDetailScreen] Error scraping qualities for download:', err);
-      } finally {
-        setIsScrapingForDownload(false);
-      }
-    }
-  };
-
-  const handleStartQualityDownload = async (qualityKey, streamUrl, sizeStr) => {
-    const downloadId = `${movie.id}_${isTVShow ? `s${currentEpisode?.seasonNumber || 1}e${currentEpisode?.episodeNumber || 1}` : 'movie'}_${qualityKey}`;
-    const epSubtitle = isTVShow 
-      ? `Season ${currentEpisode?.seasonNumber || 1} • Episode ${currentEpisode?.episodeNumber || 1}`
-      : `${releaseYear || ''} • ${qualityKey.toUpperCase()}`;
-
-    await DownloadManager.startDownload({
-      id: downloadId,
-      mediaId: movie.id,
-      title: displayTitle,
-      subtitle: epSubtitle,
-      poster: posterUrl || backdropUrl,
-      quality: qualityKey,
-      size: sizeStr,
-      streamUrl: streamUrl,
-      mediaType: isTVShow ? 'series' : 'movie',
-      seasonNumber: currentEpisode?.seasonNumber || 1,
-      episodeNumber: currentEpisode?.episodeNumber || 1
-    });
-  };
 
   // Fullscreen Landscape Toggle with System Orientation Support
   const toggleFullscreen = () => {
@@ -1416,9 +1343,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
             } catch (e) {}
           }
         } else {
-          // Unlock back to system auto-rotate when exiting player fullscreen
-          if (ScreenOrientation && typeof ScreenOrientation.unlockAsync === 'function') {
-            await ScreenOrientation.unlockAsync();
+          // In movie detail screen, strictly lock to Portrait so video plays in the same detail screen
+          if (ScreenOrientation && typeof ScreenOrientation.lockAsync === 'function') {
+            await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
           }
           StatusBar.setHidden(false, 'fade');
           if (Platform.OS === 'android' && NavigationBar) {
@@ -1437,33 +1364,6 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     };
 
     handleOrientationAndSystemUI();
-  }, [isFullscreen]);
-
-  // Listen to physical device orientation changes to auto-toggle player fullscreen
-  useEffect(() => {
-    let subscription = null;
-    try {
-      if (ScreenOrientation && typeof ScreenOrientation.addOrientationChangeListener === 'function') {
-        subscription = ScreenOrientation.addOrientationChangeListener((event) => {
-          const orientation = event?.orientationInfo?.orientation;
-          const isLandscapeOrientation = 
-            orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT || 
-            orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
-          
-          if (isLandscapeOrientation && !isFullscreen) {
-            setIsFullscreen(true);
-          } else if (!isLandscapeOrientation && isFullscreen) {
-            setIsFullscreen(false);
-          }
-        });
-      }
-    } catch (e) {}
-
-    return () => {
-      if (subscription && typeof ScreenOrientation.removeOrientationChangeListener === 'function') {
-        ScreenOrientation.removeOrientationChangeListener(subscription);
-      }
-    };
   }, [isFullscreen]);
 
   // Clean up player, unlock orientation and restore system UI when unmounting MovieDetailScreen
@@ -1587,6 +1487,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     stallsHistoryRef.current = [];
     currentTimeRef.current = target;
     setCurrentTime(target);
+    setIsBuffering(true);
+    isBufferingRef.current = true;
 
     try {
       vlcPlayerRef.current?.seek(target);
@@ -1997,7 +1899,6 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
             continueAudioInBackground={false}
             onLoadStart={() => {
               console.log('[VLCPlayer] onLoadStart');
-              vlcPlayerRef.current?.getTracks();
             }}
             onLoad={(event) => {
               console.log('[VLCPlayer] onLoad event:', event);
@@ -2007,15 +1908,6 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               if (event?.duration && event.duration > 0) {
                 setDuration(event.duration);
               }
-              if (lastSavedSeekTimeRef.current > 0.5) {
-                const targetSec = lastSavedSeekTimeRef.current;
-                console.log('[VLCPlayer] Seamlessly restoring position after orientation change:', targetSec);
-                vlcPlayerRef.current?.seek(targetSec);
-                currentTimeRef.current = targetSec;
-                setCurrentTime(targetSec);
-                lastSavedSeekTimeRef.current = 0;
-              }
-              vlcPlayerRef.current?.getTracks();
             }}
             onProgress={(event) => {
               if (isScrubbingRef.current) return;
@@ -2024,28 +1916,26 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                 // If a seek was recently initiated, filter out stale pre-seek time reports from the decoder
                 if (pendingSeekTimeRef.current !== null) {
                   const elapsed = Date.now() - lastSeekTimestampRef.current;
-                  if (Math.abs(cur - pendingSeekTimeRef.current) > 3) {
-                    if (elapsed < 5000) {
-                      return; // Drop stale pre-seek progress while decoder catches up
-                    }
+                  const diff = Math.abs(cur - pendingSeekTimeRef.current);
+                  if (diff > 2.5 && elapsed < 2500) {
+                    return; // Drop stale pre-seek progress while decoder catches up
                   }
                   pendingSeekTimeRef.current = null;
                   isSeekingRef.current = false;
+                  setIsBuffering(false);
+                  isBufferingRef.current = false;
                 }
 
                 currentTimeRef.current = cur;
                 if (cur >= 0) {
                   setHasFirstFrameRendered(true);
-                  if (isBufferingRef.current) {
+                  if (isBufferingRef.current && pendingSeekTimeRef.current === null) {
                     setIsBuffering(false);
                     isBufferingRef.current = false;
                   }
                 }
                 if (controlsVisibleRef.current || !isSeekingRef.current) {
                   setCurrentTime(cur);
-                }
-                if (availableAudioTracksRef.current.length === 0) {
-                  vlcPlayerRef.current?.getTracks();
                 }
               }
               if (event?.duration && event.duration > 0 && event.duration !== duration) {
@@ -2054,32 +1944,35 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
             }}
             onSeek={(event) => {
               console.log('[VLCPlayer] onSeek event:', event);
-              if (isBufferingRef.current) {
-                setIsBuffering(false);
-                isBufferingRef.current = false;
-              }
+              // Native acknowledged seek; decoder is buffering target keyframe.
+              // Keep pendingSeekTimeRef active so stale pre-seek packets are dropped.
+              setIsBuffering(true);
+              isBufferingRef.current = true;
             }}
             onPlaying={() => {
               console.log('[VLCPlayer] onPlaying');
               setIsPlaying(true);
               isPlayingRef.current = true;
-              if (pendingSeekTimeRef.current !== null) {
-                const elapsed = Date.now() - lastSeekTimestampRef.current;
-                if (elapsed >= 1500) {
-                  pendingSeekTimeRef.current = null;
-                  isSeekingRef.current = false;
-                }
-              }
               setHasFirstFrameRendered(true);
-              setIsBuffering(false);
-              isBufferingRef.current = false;
-              vlcPlayerRef.current?.getTracks();
+              if (pendingSeekTimeRef.current === null) {
+                setIsBuffering(false);
+                isBufferingRef.current = false;
+              }
+              if (lastSavedSeekTimeRef.current > 0.5) {
+                const targetSec = lastSavedSeekTimeRef.current;
+                console.log('[VLCPlayer] Restoring playback position to:', targetSec);
+                lastSavedSeekTimeRef.current = 0;
+                setTimeout(() => {
+                  try {
+                    vlcPlayerRef.current?.seek(targetSec);
+                    currentTimeRef.current = targetSec;
+                    setCurrentTime(targetSec);
+                  } catch (_) {}
+                }, 300);
+              }
               setTimeout(() => {
                 try { vlcPlayerRef.current?.getTracks(); } catch (_) {}
-              }, 600);
-              setTimeout(() => {
-                try { vlcPlayerRef.current?.getTracks(); } catch (_) {}
-              }, 1800);
+              }, 800);
             }}
             onPaused={() => {
               setIsPlaying(false);
@@ -2092,41 +1985,33 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               isBufferingRef.current = buffering;
               if (!buffering) {
                 isSeekingRef.current = false;
-                vlcPlayerRef.current?.getTracks();
               }
             }}
             onTracks={(tracks) => {
               console.log('[VLCPlayer] onTracks received:', tracks);
-              if (tracks?.audio && Array.isArray(tracks.audio) && tracks.audio.length > 0) {
-                const formatted = tracks.audio.map((t, idx) => ({
+              let audioList = [];
+              if (Array.isArray(tracks?.audio)) {
+                audioList = tracks.audio;
+              } else if (typeof tracks?.audio === 'string' && tracks.audio.trim().startsWith('[')) {
+                try { audioList = JSON.parse(tracks.audio); } catch (_) {}
+              }
+
+              if (audioList.length > 0) {
+                const formatted = audioList.map((t, idx) => ({
                   id: String(t.id),
                   trackId: t.id,
                   originalIndex: idx,
                   name: t.name,
                   label: t.name,
                   language: t.name,
-                  displayLabel: getTrackDisplayLabel(t, 'Audio Track', idx, tracks.audio)
+                  displayLabel: getTrackDisplayLabel(t, 'Audio Track', idx, audioList)
                 }));
                 setAvailableAudioTracks(formatted);
                 availableAudioTracksRef.current = formatted;
-                // Lock & preserve active audio track across minimize/maximize and track reload events
-                if (selectedAudioTrackRef.current) {
-                  const match = formatted.find(t => 
-                    t.trackId === selectedAudioTrackRef.current.trackId || 
-                    (t.id != null && selectedAudioTrackRef.current.id != null && String(t.id) === String(selectedAudioTrackRef.current.id)) ||
-                    (t.displayLabel && t.displayLabel === selectedAudioTrackRef.current.displayLabel)
-                  );
-                  if (match) {
-                    setSelectedAudioTrack(match);
-                    selectedAudioTrackRef.current = match;
-                    if (typeof tracks.audioIndex === 'number' && tracks.audioIndex !== match.trackId) {
-                      console.log('[MovieDetailScreen] Preserving selected audio track:', match.trackId, match.displayLabel);
-                      vlcPlayerRef.current?.selectAudioTrack(match.trackId);
-                    }
-                  }
-                } else if (!hasAutoSelectedDefaultAudio.current && !hasUserManuallySelectedAudioTrack.current) {
+
+                if (!hasAutoSelectedDefaultAudio.current && !hasUserManuallySelectedAudioTrack.current) {
                   applyDefaultAudioTrack(formatted);
-                } else if (typeof tracks.audioIndex === 'number') {
+                } else if (!selectedAudioTrackRef.current && typeof tracks.audioIndex === 'number' && tracks.audioIndex !== -1) {
                   const currentActive = formatted.find(t => t.trackId === tracks.audioIndex);
                   if (currentActive) {
                     setSelectedAudioTrack(currentActive);
@@ -2134,8 +2019,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   }
                 }
               }
-              if (tracks?.subtitle && Array.isArray(tracks.subtitle)) {
-                const formattedSubs = tracks.subtitle
+
+              let subList = [];
+              if (Array.isArray(tracks?.subtitle)) {
+                subList = tracks.subtitle;
+              } else if (typeof tracks?.subtitle === 'string' && tracks.subtitle.trim().startsWith('[')) {
+                try { subList = JSON.parse(tracks.subtitle); } catch (_) {}
+              }
+
+              if (subList.length > 0) {
+                const formattedSubs = subList
                   .filter(s => s && s.id !== -1 && String(s.name || '').trim().toLowerCase() !== 'disable' && String(s.name || '').trim().toLowerCase() !== 'disabled')
                   .map((s, idx) => ({
                     id: String(s.id),
@@ -2152,6 +2045,13 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
             }}
             onError={(err) => {
               console.warn('[VLCPlayer] Playback error event:', err);
+              if (!hasFirstFrameRendered) {
+                setPlaybackError({
+                  title: 'Playback Error',
+                  message: `Server ${activeServer} connection failed. Switching to an alternate server is recommended.`,
+                  server: activeServer
+                });
+              }
             }}
             onEnd={() => {
               setIsPlaying(false);
@@ -2161,15 +2061,23 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
 
         {/* Poster backdrop overlay ONLY while user has not initiated playback */}
         {!hasStartedPlayback && (
-          <Image
-            source={{ 
-              uri: getBackdropUrl(details.backdrop_path || movie.backdrop_path) || 
-                   getPosterUrl(details.poster_path || movie.poster_path) ||
-                   'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=800&auto=format&fit=crop'
-            }}
-            style={[StyleSheet.absoluteFill, { zIndex: 5 }]}
-            resizeMode="cover"
-          />
+          <View style={[StyleSheet.absoluteFill, { zIndex: 5 }]}>
+            <Image
+              source={{ 
+                uri: getBackdropUrl(details.backdrop_path || movie.backdrop_path) || 
+                     getPosterUrl(details.poster_path || movie.poster_path) ||
+                     'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=800&auto=format&fit=crop'
+              }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+            />
+            {/* Top & Bottom Cinematic Gradient */}
+            <LinearGradient
+              colors={['rgba(0,0,0,0.65)', 'transparent', 'rgba(0,0,0,0.85)']}
+              locations={[0, 0.4, 1]}
+              style={StyleSheet.absoluteFill}
+            />
+          </View>
         )}
 
         {/* Dynamic Screen Dimming / Brightness Overlay */}
@@ -2200,9 +2108,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               zIndex: 60
             }}
           >
-            <View style={{ width: isPortrait ? scale(64) : scale(88), height: isPortrait ? scale(64) : scale(88), alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: scale(44), borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.5)' }}>
-              <MaterialIcons name="replay-10" size={isPortrait ? scale(30) : scale(42)} color="#38bdf8" />
-              <Text style={{ fontSize: moderateScale(isPortrait ? 11 : 14), color: '#38bdf8', fontWeight: '800', marginTop: verticalScale(2) }}>-10s</Text>
+            <View style={{ width: isPortrait ? scale(64) : scale(88), height: isPortrait ? scale(64) : scale(88), alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: scale(44), borderWidth: 1, borderColor: 'rgba(229, 9, 20, 0.5)' }}>
+              <MaterialIcons name="replay-10" size={isPortrait ? scale(30) : scale(42)} color="#E50914" />
+              <Text style={{ fontSize: moderateScale(isPortrait ? 11 : 14), color: '#E50914', fontWeight: '800', marginTop: verticalScale(2) }}>-10s</Text>
             </View>
           </Animated.View>
         )}
@@ -2219,9 +2127,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               zIndex: 60
             }}
           >
-            <View style={{ width: isPortrait ? scale(64) : scale(88), height: isPortrait ? scale(64) : scale(88), alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: scale(44), borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.5)' }}>
-              <MaterialIcons name="forward-10" size={isPortrait ? scale(30) : scale(42)} color="#38bdf8" />
-              <Text style={{ fontSize: moderateScale(isPortrait ? 11 : 14), color: '#38bdf8', fontWeight: '800', marginTop: verticalScale(2) }}>+10s</Text>
+            <View style={{ width: isPortrait ? scale(64) : scale(88), height: isPortrait ? scale(64) : scale(88), alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: scale(44), borderWidth: 1, borderColor: 'rgba(229, 9, 20, 0.5)' }}>
+              <MaterialIcons name="forward-10" size={isPortrait ? scale(30) : scale(42)} color="#E50914" />
+              <Text style={{ fontSize: moderateScale(isPortrait ? 11 : 14), color: '#E50914', fontWeight: '800', marginTop: verticalScale(2) }}>+10s</Text>
             </View>
           </Animated.View>
         )}
@@ -2275,18 +2183,18 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               borderRadius: scale(18),
               alignItems: 'center',
               borderWidth: 1,
-              borderColor: 'rgba(56, 189, 248, 0.45)',
+              borderColor: 'rgba(229, 9, 20, 0.45)',
               zIndex: 65,
-              shadowColor: '#38bdf8',
+              shadowColor: '#E50914',
               shadowOpacity: 0.35,
               shadowRadius: 10
             }}
           >
-            <Ionicons name={volumeLevel === 0 ? "volume-mute" : (volumeLevel > 0.5 ? "volume-high" : "volume-low")} size={scale(24)} color="#38bdf8" />
+            <Ionicons name={volumeLevel === 0 ? "volume-mute" : (volumeLevel > 0.5 ? "volume-high" : "volume-low")} size={scale(24)} color="#E50914" />
             <View style={{ width: scale(6), height: verticalScale(50), backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: scale(3), marginVertical: verticalScale(8), overflow: 'hidden', justifyContent: 'flex-end' }}>
-              <View style={{ width: '100%', height: `${Math.round(volumeLevel * 100)}%`, backgroundColor: '#38bdf8', borderRadius: scale(3) }} />
+              <View style={{ width: '100%', height: `${Math.round(volumeLevel * 100)}%`, backgroundColor: '#E50914', borderRadius: scale(3) }} />
             </View>
-            <Text style={{ color: '#38bdf8', fontSize: moderateScale(11), fontWeight: '800' }}>
+            <Text style={{ color: '#E50914', fontSize: moderateScale(11), fontWeight: '800' }}>
               {Math.round(volumeLevel * 100)}%
             </Text>
           </Animated.View>
@@ -2301,21 +2209,21 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               position: 'absolute',
               top: isPortrait ? scale(48) : scale(22),
               alignSelf: 'center',
-              backgroundColor: 'rgba(15, 23, 42, 0.95)',
+              backgroundColor: 'rgba(18, 18, 20, 0.95)',
               paddingHorizontal: scale(14),
               paddingVertical: verticalScale(6),
               borderRadius: scale(20),
               borderWidth: 1,
-              borderColor: 'rgba(56, 189, 248, 0.6)',
+              borderColor: 'rgba(229, 9, 20, 0.6)',
               flexDirection: 'row',
               alignItems: 'center',
               zIndex: 70,
-              shadowColor: '#38bdf8',
+              shadowColor: '#E50914',
               shadowOpacity: 0.4,
               shadowRadius: 8
             }}
           >
-            <MaterialIcons name="auto-awesome" size={scale(14)} color="#38bdf8" style={{ marginRight: scale(6) }} />
+            <MaterialIcons name="auto-awesome" size={scale(14)} color="#E50914" style={{ marginRight: scale(6) }} />
             <Text style={{ color: '#ffffff', fontSize: moderateScale(11), fontWeight: '700' }}>
               {abrNotice}
             </Text>
@@ -2345,7 +2253,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               paddingHorizontal: scale(24) 
             }}
           >
-            <ActivityIndicator size="large" color="#38bdf8" />
+            <ActivityIndicator size="large" color="#E50914" />
             <Text style={{ color: '#ffffff', fontSize: moderateScale(13), marginTop: verticalScale(14), fontWeight: '700', letterSpacing: 0.2, textAlign: 'center', lineHeight: moderateScale(20), maxWidth: scale(280) }}>
               {CATCHY_CINEMA_QUOTES[currentQuoteIndex]}
             </Text>
@@ -2438,16 +2346,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       gap: scale(4),
                       paddingVertical: verticalScale(isPortrait ? 4 : 6),
                       paddingHorizontal: scale(isPortrait ? 8 : 12),
-                      backgroundColor: activeServer === s.id ? 'rgba(56, 189, 248, 0.25)' : '#18181b',
-                      borderColor: activeServer === s.id ? '#38bdf8' : 'rgba(255, 255, 255, 0.15)'
+                      backgroundColor: activeServer === s.id ? 'rgba(229, 9, 20, 0.25)' : '#18181b',
+                      borderColor: activeServer === s.id ? '#E50914' : 'rgba(255, 255, 255, 0.15)'
                     }}
                   >
                     <Ionicons 
                       name={activeServer === s.id ? "server" : "server-outline"} 
                       size={isPortrait ? scale(9) : scale(12)} 
-                      color={activeServer === s.id ? "#38bdf8" : "#9ca3af"} 
+                      color={activeServer === s.id ? "#E50914" : "#9ca3af"} 
                     />
-                    <Text style={{ fontWeight: '700', fontSize: moderateScale(isPortrait ? 9.5 : 11), color: activeServer === s.id ? '#38bdf8' : '#a1a1aa' }}>
+                    <Text style={{ fontWeight: '700', fontSize: moderateScale(isPortrait ? 9.5 : 11), color: activeServer === s.id ? '#E50914' : '#a1a1aa' }}>
                       {s.short}
                     </Text>
                   </TouchableOpacity>
@@ -2464,7 +2372,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   activeOpacity={0.8}
                   style={{
                     borderRadius: scale(20),
-                    backgroundColor: '#0284c7',
+                    backgroundColor: '#E50914',
                     flexDirection: 'row',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -2508,10 +2416,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
           <TouchableOpacity 
             onPress={toggleScreenLock}
             activeOpacity={0.8}
-            style={{ position: 'absolute', left: scale(20), top: verticalScale(20), paddingVertical: verticalScale(8), paddingHorizontal: scale(14), borderRadius: scale(20), backgroundColor: 'rgba(0,0,0,0.85)', borderWidth: 1, borderColor: '#38bdf8', flexDirection: 'row', alignItems: 'center', gap: scale(6), zIndex: 50 }}
+            style={{ position: 'absolute', left: scale(20), top: verticalScale(20), paddingVertical: verticalScale(8), paddingHorizontal: scale(14), borderRadius: scale(20), backgroundColor: 'rgba(0,0,0,0.85)', borderWidth: 1, borderColor: '#E50914', flexDirection: 'row', alignItems: 'center', gap: scale(6), zIndex: 50 }}
           >
-            <Ionicons name="lock-closed" size={scale(16)} color="#38bdf8" />
-            <Text style={{ color: '#38bdf8', fontSize: moderateScale(11), fontWeight: '700' }}>Screen Locked (Tap to Unlock)</Text>
+            <Ionicons name="lock-closed" size={scale(16)} color="#E50914" />
+            <Text style={{ color: '#E50914', fontSize: moderateScale(11), fontWeight: '700' }}>Screen Locked (Tap to Unlock)</Text>
           </TouchableOpacity>
         )}
 
@@ -2537,15 +2445,15 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                 borderRadius: centerPlayBtnSize / 2,
                 backgroundColor: 'rgba(0, 0, 0, 0.65)',
                 borderWidth: 1.5,
-                borderColor: 'rgba(56, 189, 248, 0.5)',
+                borderColor: 'rgba(229, 9, 20, 0.5)',
                 alignItems: 'center',
                 justifyContent: 'center',
-                shadowColor: '#38bdf8',
+                shadowColor: '#E50914',
                 shadowOpacity: 0.4,
                 shadowRadius: 12,
               }}
             >
-              <ActivityIndicator size={isPortrait ? "small" : "large"} color="#38bdf8" />
+              <ActivityIndicator size={isPortrait ? "small" : "large"} color="#E50914" />
             </View>
           </View>
         )}
@@ -2609,7 +2517,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   </Text>
                   <Text 
                     style={{ 
-                      color: isFullscreenMode ? '#38bdf8' : '#94a3b8', 
+                      color: isFullscreenMode ? '#FF4D58' : '#94a3b8', 
                       fontSize: isFullscreenMode ? moderateScale(14) : moderateScale(9.8), 
                       fontWeight: isFullscreenMode ? '700' : '500',
                       marginTop: isFullscreenMode ? 2 : 1,
@@ -2642,12 +2550,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       flexDirection: 'row',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'episodes' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'episodes' ? '#38bdf8' : 'rgba(255, 255, 255, 0.2)'
+                      backgroundColor: activePlayerMenu === 'episodes' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'episodes' ? '#E50914' : 'rgba(255, 255, 255, 0.2)'
                     }}
                   >
-                    <Ionicons name="layers-outline" size={topIconSize - 2} color={activePlayerMenu === 'episodes' ? '#38bdf8' : '#ffffff'} style={{ marginRight: scale(3) }} />
-                    <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'episodes' ? '#38bdf8' : '#ffffff', fontWeight: '800' }}>
+                    <Ionicons name="layers-outline" size={topIconSize - 2} color={activePlayerMenu === 'episodes' ? '#E50914' : '#ffffff'} style={{ marginRight: scale(3) }} />
+                    <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'episodes' ? '#E50914' : '#ffffff', fontWeight: '800' }}>
                       S{selectedSeason || 1}
                     </Text>
                   </TouchableOpacity>
@@ -2666,12 +2574,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       flexDirection: 'row',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'episodes' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'episodes' ? '#38bdf8' : 'rgba(255, 255, 255, 0.2)'
+                      backgroundColor: activePlayerMenu === 'episodes' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'episodes' ? '#E50914' : 'rgba(255, 255, 255, 0.2)'
                     }}
                   >
-                    <Ionicons name="albums-outline" size={topIconSize - 2} color={activePlayerMenu === 'episodes' ? '#38bdf8' : '#ffffff'} style={{ marginRight: scale(3) }} />
-                    <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'episodes' ? '#38bdf8' : '#ffffff', fontWeight: '800' }}>
+                    <Ionicons name="albums-outline" size={topIconSize - 2} color={activePlayerMenu === 'episodes' ? '#E50914' : '#ffffff'} style={{ marginRight: scale(3) }} />
+                    <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'episodes' ? '#E50914' : '#ffffff', fontWeight: '800' }}>
                       {currentEpisode ? `EP ${currentEpisode.episodeNumber || 1}` : 'Eps'}
                     </Text>
                   </TouchableOpacity>
@@ -2689,12 +2597,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     flexDirection: 'row',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    backgroundColor: activePlayerMenu === 'servers' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                    borderColor: activePlayerMenu === 'servers' ? '#38bdf8' : 'rgba(255, 255, 255, 0.2)'
+                    backgroundColor: activePlayerMenu === 'servers' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                    borderColor: activePlayerMenu === 'servers' ? '#E50914' : 'rgba(255, 255, 255, 0.2)'
                   }}
                 >
-                  <MaterialCommunityIcons name="server-network" size={topIconSize - 2} color={activePlayerMenu === 'servers' ? '#38bdf8' : '#ffffff'} style={{ marginRight: scale(3) }} />
-                  <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'servers' ? '#38bdf8' : '#ffffff', fontWeight: '800' }}>
+                  <MaterialCommunityIcons name="server-network" size={topIconSize - 2} color={activePlayerMenu === 'servers' ? '#E50914' : '#ffffff'} style={{ marginRight: scale(3) }} />
+                  <Text style={{ fontSize: moderateScale(qualityBadgeTextSize), color: activePlayerMenu === 'servers' ? '#E50914' : '#ffffff', fontWeight: '800' }}>
                     Server {activeServer}
                   </Text>
                 </TouchableOpacity>
@@ -2746,7 +2654,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                 {isBufferingState ? (
                   <ActivityIndicator 
                     size={isPortrait ? "small" : "large"} 
-                    color="#0284c7" 
+                    color="#E50914" 
                   />
                 ) : (
                   <Ionicons 
@@ -2808,7 +2716,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       style={{ 
                         width: `${Math.min(100, Math.max(0, (currentTime / (duration || 1)) * 100))}%`,
                         height: '100%',
-                        backgroundColor: '#38bdf8',
+                        backgroundColor: '#E50914',
                         borderRadius: scale(2)
                       }}
                     />
@@ -2823,9 +2731,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                         width: scale(12),
                         height: scale(12),
                         borderRadius: scale(6),
-                        backgroundColor: '#ffffff',
-                        borderWidth: 1.5,
-                        borderColor: '#38bdf8'
+                        backgroundColor: '#E50914',
+                        borderWidth: 2,
+                        borderColor: '#ffffff'
                       }}
                     />
                   </View>
@@ -2861,14 +2769,14 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       borderWidth: 1,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'quality' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'quality' ? '#38bdf8' : 'rgba(255, 255, 255, 0.15)'
+                      backgroundColor: activePlayerMenu === 'quality' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'quality' ? '#E50914' : 'rgba(255, 255, 255, 0.15)'
                     }}
                   >
                     <Ionicons 
                       name="settings-outline" 
                       size={bottomIconSize} 
-                      color={activePlayerMenu === 'quality' ? "#38bdf8" : "#ffffff"} 
+                      color={activePlayerMenu === 'quality' ? "#E50914" : "#ffffff"} 
                     />
                   </TouchableOpacity>
 
@@ -2883,11 +2791,11 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       borderWidth: 1,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'audio' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'audio' ? '#38bdf8' : 'rgba(255, 255, 255, 0.15)'
+                      backgroundColor: activePlayerMenu === 'audio' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'audio' ? '#E50914' : 'rgba(255, 255, 255, 0.15)'
                     }}
                   >
-                    <MaterialIcons name="audiotrack" size={bottomIconSize} color={activePlayerMenu === 'audio' ? '#38bdf8' : '#ffffff'} />
+                    <MaterialIcons name="audiotrack" size={bottomIconSize} color={activePlayerMenu === 'audio' ? '#E50914' : '#ffffff'} />
                   </TouchableOpacity>
 
                   {/* 3. Subtitles (CC) Selector Button */}
@@ -2901,14 +2809,14 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       borderWidth: 1,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'subtitles' || selectedSubtitleTrack ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'subtitles' || selectedSubtitleTrack ? '#38bdf8' : 'rgba(255, 255, 255, 0.15)'
+                      backgroundColor: activePlayerMenu === 'subtitles' || selectedSubtitleTrack ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'subtitles' || selectedSubtitleTrack ? '#E50914' : 'rgba(255, 255, 255, 0.15)'
                     }}
                   >
                     <MaterialCommunityIcons 
                       name={selectedSubtitleTrack ? "subtitles" : "subtitles-outline"} 
                       size={bottomIconSize} 
-                      color={selectedSubtitleTrack || activePlayerMenu === 'subtitles' ? "#38bdf8" : "#ffffff"} 
+                      color={selectedSubtitleTrack || activePlayerMenu === 'subtitles' ? "#E50914" : "#ffffff"} 
                     />
                   </TouchableOpacity>
 
@@ -2923,11 +2831,11 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       borderWidth: 1,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: activePlayerMenu === 'speed' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(0,0,0,0.65)',
-                      borderColor: activePlayerMenu === 'speed' ? '#38bdf8' : 'rgba(255, 255, 255, 0.15)'
+                      backgroundColor: activePlayerMenu === 'speed' ? 'rgba(229, 9, 20, 0.3)' : 'rgba(0,0,0,0.65)',
+                      borderColor: activePlayerMenu === 'speed' ? '#E50914' : 'rgba(255, 255, 255, 0.15)'
                     }}
                   >
-                    <Text style={{ color: activePlayerMenu === 'speed' ? '#38bdf8' : '#ffffff', fontSize: moderateScale(isPortrait ? 10 : 11.5), fontWeight: '700' }}>
+                    <Text style={{ color: activePlayerMenu === 'speed' ? '#E50914' : '#ffffff', fontSize: moderateScale(isPortrait ? 10 : 11.5), fontWeight: '700' }}>
                       {playbackSpeed}x
                     </Text>
                   </TouchableOpacity>
@@ -2941,8 +2849,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       height: bottomBtnSize,
                       borderRadius: bottomBtnSize / 2,
                       borderWidth: 1,
-                      borderColor: contentFitMode === 'cover' ? '#38bdf8' : 'rgba(255,255,255,0.15)',
-                      backgroundColor: contentFitMode === 'cover' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(0,0,0,0.65)',
+                      borderColor: contentFitMode === 'cover' ? '#E50914' : 'rgba(255,255,255,0.15)',
+                      backgroundColor: contentFitMode === 'cover' ? 'rgba(229, 9, 20, 0.25)' : 'rgba(0,0,0,0.65)',
                       alignItems: 'center',
                       justifyContent: 'center'
                     }}
@@ -2950,7 +2858,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     <MaterialCommunityIcons 
                       name={contentFitMode === 'cover' ? "aspect-ratio" : "fit-to-screen"} 
                       size={bottomIconSize} 
-                      color={contentFitMode === 'cover' ? "#38bdf8" : "#ffffff"} 
+                      color={contentFitMode === 'cover' ? "#E50914" : "#ffffff"} 
                     />
                   </TouchableOpacity>
 
@@ -2982,8 +2890,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                         height: bottomBtnSize,
                         borderRadius: bottomBtnSize / 2,
                         borderWidth: 1,
-                        borderColor: isFullscreenMode ? '#38bdf8' : 'rgba(255,255,255,0.15)',
-                        backgroundColor: isFullscreenMode ? 'rgba(56, 189, 248, 0.25)' : 'rgba(0,0,0,0.65)',
+                        borderColor: isFullscreenMode ? '#E50914' : 'rgba(255,255,255,0.15)',
+                        backgroundColor: isFullscreenMode ? 'rgba(229, 9, 20, 0.25)' : 'rgba(0,0,0,0.65)',
                         alignItems: 'center',
                         justifyContent: 'center'
                       }}
@@ -2991,7 +2899,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       <MaterialCommunityIcons 
                         name={isFullscreenMode ? "fullscreen-exit" : "fullscreen"} 
                         size={bottomIconSize} 
-                        color={isFullscreenMode ? "#38bdf8" : "#ffffff"} 
+                        color={isFullscreenMode ? "#E50914" : "#ffffff"} 
                       />
                     </TouchableOpacity>
                   </Animated.View>
@@ -3050,12 +2958,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
-                    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                    backgroundColor: 'rgba(18, 18, 20, 0.92)',
                     paddingHorizontal: scale(12),
                     paddingVertical: verticalScale(7),
                     borderRadius: scale(18),
                     borderWidth: 1.2,
-                    borderColor: '#38bdf8',
+                    borderColor: '#E50914',
                     shadowColor: '#000',
                     shadowOffset: { width: 0, height: 4 },
                     shadowOpacity: 0.4,
@@ -3063,7 +2971,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     elevation: 8
                   }}
                 >
-                  <MaterialIcons name="fast-forward" size={scale(15)} color="#38bdf8" style={{ marginRight: scale(4) }} />
+                  <MaterialIcons name="fast-forward" size={scale(15)} color="#E50914" style={{ marginRight: scale(4) }} />
                   <Text style={{ color: '#ffffff', fontSize: moderateScale(11.5), fontWeight: '800' }}>
                     Skip Recap
                   </Text>
@@ -3084,12 +2992,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
-                    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                    backgroundColor: 'rgba(18, 18, 20, 0.92)',
                     paddingHorizontal: scale(12),
                     paddingVertical: verticalScale(7),
                     borderRadius: scale(18),
                     borderWidth: 1.2,
-                    borderColor: '#38bdf8',
+                    borderColor: '#E50914',
                     shadowColor: '#000',
                     shadowOffset: { width: 0, height: 4 },
                     shadowOpacity: 0.4,
@@ -3097,7 +3005,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     elevation: 8
                   }}
                 >
-                  <MaterialIcons name="fast-forward" size={scale(15)} color="#38bdf8" style={{ marginRight: scale(4) }} />
+                  <MaterialIcons name="fast-forward" size={scale(15)} color="#E50914" style={{ marginRight: scale(4) }} />
                   <Text style={{ color: '#ffffff', fontSize: moderateScale(11.5), fontWeight: '800' }}>
                     Skip Intro
                   </Text>
@@ -3118,7 +3026,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
-                    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                    backgroundColor: 'rgba(18, 18, 20, 0.92)',
                     paddingHorizontal: scale(12),
                     paddingVertical: verticalScale(7),
                     borderRadius: scale(18),
@@ -3147,21 +3055,21 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
-                    backgroundColor: '#38bdf8',
+                    backgroundColor: '#E50914',
                     paddingHorizontal: scale(13),
                     paddingVertical: verticalScale(7),
                     borderRadius: scale(18),
                     borderWidth: 1.2,
-                    borderColor: '#7dd3fc',
-                    shadowColor: '#38bdf8',
+                    borderColor: '#FF4D58',
+                    shadowColor: '#E50914',
                     shadowOffset: { width: 0, height: 4 },
                     shadowOpacity: 0.45,
                     shadowRadius: 8,
                     elevation: 8
                   }}
                 >
-                  <Ionicons name="play-skip-forward" size={scale(14)} color="#000000" style={{ marginRight: scale(5) }} />
-                  <Text style={{ color: '#000000', fontSize: moderateScale(11.5), fontWeight: '900' }}>
+                  <Ionicons name="play-skip-forward" size={scale(14)} color="#ffffff" style={{ marginRight: scale(5) }} />
+                  <Text style={{ color: '#ffffff', fontSize: moderateScale(11.5), fontWeight: '900' }}>
                     Next Episode
                   </Text>
                 </TouchableOpacity>
@@ -3201,12 +3109,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               {/* Header */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: verticalScale(6), borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.1)', marginBottom: verticalScale(4) }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(6) }}>
-                  {activePlayerMenu === 'quality' && <MaterialIcons name="hd" size={scale(16)} color="#38bdf8" />}
-                  {activePlayerMenu === 'audio' && <MaterialIcons name="audiotrack" size={scale(16)} color="#38bdf8" />}
-                  {activePlayerMenu === 'subtitles' && <MaterialCommunityIcons name="subtitles" size={scale(16)} color="#38bdf8" />}
-                  {activePlayerMenu === 'speed' && <MaterialIcons name="speed" size={scale(16)} color="#38bdf8" />}
-                  {activePlayerMenu === 'servers' && <MaterialCommunityIcons name="server-network" size={scale(16)} color="#38bdf8" />}
-                  {activePlayerMenu === 'episodes' && <Ionicons name="albums-outline" size={scale(16)} color="#38bdf8" />}
+                  {activePlayerMenu === 'quality' && <MaterialIcons name="hd" size={scale(16)} color="#E50914" />}
+                  {activePlayerMenu === 'audio' && <MaterialIcons name="audiotrack" size={scale(16)} color="#E50914" />}
+                  {activePlayerMenu === 'subtitles' && <MaterialCommunityIcons name="subtitles" size={scale(16)} color="#E50914" />}
+                  {activePlayerMenu === 'speed' && <MaterialIcons name="speed" size={scale(16)} color="#E50914" />}
+                  {activePlayerMenu === 'servers' && <MaterialCommunityIcons name="server-network" size={scale(16)} color="#E50914" />}
+                  {activePlayerMenu === 'episodes' && <Ionicons name="albums-outline" size={scale(16)} color="#E50914" />}
                   <Text style={{ color: '#ffffff', fontSize: moderateScale(12), fontWeight: '800' }}>
                     {activePlayerMenu === 'quality' && 'Video Quality'}
                     {activePlayerMenu === 'audio' && 'Audio Languages'}
@@ -3245,9 +3153,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                           flexDirection: 'row',
                           justifyContent: 'space-between',
                           alignItems: 'center',
-                          backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                          backgroundColor: isSelected ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                           borderWidth: 1,
-                          borderColor: isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                          borderColor: isSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                         }}
                       >
                         <View style={{ flex: 1, marginRight: scale(8) }}>
@@ -3255,18 +3163,18 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                             <MaterialCommunityIcons 
                               name={s.id === 1 ? 'lightning-bolt' : (s.id === 2 ? 'video-4k-box' : 'play-circle')} 
                               size={scale(14)} 
-                              color={isSelected ? '#38bdf8' : '#a1a1aa'} 
+                              color={isSelected ? '#E50914' : '#a1a1aa'} 
                             />
-                            <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#38bdf8' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
+                            <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#FF4D58' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
                               {s.label}
                             </Text>
                           </View>
-                          <Text style={{ fontSize: moderateScale(9), color: isSelected ? '#7dd3fc' : '#a1a1aa', marginTop: verticalScale(1) }}>
+                          <Text style={{ fontSize: moderateScale(9), color: isSelected ? '#FFA3A8' : '#a1a1aa', marginTop: verticalScale(1) }}>
                             {s.desc}
                           </Text>
                         </View>
                         {isSelected && (
-                          <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                          <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                         )}
                       </TouchableOpacity>
                     );
@@ -3297,12 +3205,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                                 paddingHorizontal: scale(10),
                                 paddingVertical: verticalScale(4),
                                 borderRadius: scale(14),
-                                backgroundColor: isSnSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)',
+                                backgroundColor: isSnSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)',
                                 borderWidth: 1,
-                                borderColor: isSnSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.12)'
+                                borderColor: isSnSelected ? '#E50914' : 'rgba(255, 255, 255, 0.12)'
                               }}
                             >
-                              <Text style={{ fontSize: moderateScale(10.5), fontWeight: '700', color: isSnSelected ? '#000000' : '#ffffff' }}>
+                              <Text style={{ fontSize: moderateScale(10.5), fontWeight: '700', color: '#ffffff' }}>
                                 Season {sNum}
                               </Text>
                             </TouchableOpacity>
@@ -3314,7 +3222,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     {/* Episodes List */}
                     {loadingEpisodes ? (
                       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: verticalScale(20) }}>
-                        <ActivityIndicator size="small" color="#38bdf8" />
+                        <ActivityIndicator size="small" color="#E50914" />
                         <Text style={{ color: '#a1a1aa', fontSize: moderateScale(10), marginTop: verticalScale(6) }}>Loading episodes...</Text>
                       </View>
                     ) : episodesList && episodesList.length > 0 ? (
@@ -3335,9 +3243,9 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                                 padding: scale(6),
                                 borderRadius: scale(8),
                                 marginBottom: verticalScale(6),
-                                backgroundColor: isEpActive ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                                backgroundColor: isEpActive ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                                 borderWidth: 1,
-                                borderColor: isEpActive ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                                borderColor: isEpActive ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                               }}
                             >
                               {ep.image ? (
@@ -3352,17 +3260,17 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                                 </View>
                               )}
                               <View style={{ flex: 1, marginRight: scale(6) }}>
-                                <Text numberOfLines={1} style={{ fontSize: moderateScale(11), color: isEpActive ? '#38bdf8' : '#ffffff', fontWeight: isEpActive ? '800' : '600' }}>
+                                <Text numberOfLines={1} style={{ fontSize: moderateScale(11), color: isEpActive ? '#FF4D58' : '#ffffff', fontWeight: isEpActive ? '800' : '600' }}>
                                   {ep.title || `Episode ${ep.episodeNumber}`}
                                 </Text>
                                 {ep.duration ? (
-                                  <Text style={{ fontSize: moderateScale(9), color: isEpActive ? '#7dd3fc' : '#a1a1aa' }}>
+                                  <Text style={{ fontSize: moderateScale(9), color: isEpActive ? '#FFA3A8' : '#a1a1aa' }}>
                                     {ep.duration}
                                   </Text>
                                 ) : null}
                               </View>
                               {isEpActive && (
-                                <Ionicons name="play-circle" size={scale(16)} color="#38bdf8" />
+                                <Ionicons name="play-circle" size={scale(16)} color="#E50914" />
                               )}
                             </TouchableOpacity>
                           );
@@ -3453,26 +3361,26 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                           flexDirection: 'row',
                           justifyContent: 'space-between',
                           alignItems: 'center',
-                          backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                          backgroundColor: isSelected ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                           borderWidth: 1,
-                          borderColor: isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                          borderColor: isSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                         }}
                       >
                         <View style={{ flex: 1, marginRight: scale(8) }}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(4) }}>
                             {q.id === 'auto' && (
-                              <MaterialIcons name="auto-awesome" size={scale(13)} color={isSelected ? '#38bdf8' : '#a1a1aa'} />
+                              <MaterialIcons name="auto-awesome" size={scale(13)} color={isSelected ? '#E50914' : '#a1a1aa'} />
                             )}
-                            <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#38bdf8' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
+                            <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#FF4D58' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
                               {q.label}
                             </Text>
                           </View>
-                          <Text style={{ fontSize: moderateScale(9), color: isSelected ? '#7dd3fc' : '#a1a1aa', marginTop: verticalScale(1) }}>
+                          <Text style={{ fontSize: moderateScale(9), color: isSelected ? '#FFA3A8' : '#a1a1aa', marginTop: verticalScale(1) }}>
                             {q.desc}
                           </Text>
                         </View>
                         {isSelected && (
-                          <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                          <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                         )}
                       </TouchableOpacity>
                     );
@@ -3495,16 +3403,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                           flexDirection: 'row',
                           justifyContent: 'space-between',
                           alignItems: 'center',
-                          backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                          backgroundColor: isSelected ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                           borderWidth: 1,
-                          borderColor: isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                          borderColor: isSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                         }}
                       >
-                        <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#38bdf8' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
+                        <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#FF4D58' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
                           {rate === 1.0 ? '1.0x (Normal)' : `${rate}x`}
                         </Text>
                         {isSelected && (
-                          <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                          <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                         )}
                       </TouchableOpacity>
                     );
@@ -3530,16 +3438,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                             flexDirection: 'row',
                             justifyContent: 'space-between',
                             alignItems: 'center',
-                            backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                            backgroundColor: isSelected ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                             borderWidth: 1,
-                            borderColor: isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                            borderColor: isSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                           }}
                         >
-                          <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#38bdf8' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
+                          <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#FF4D58' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
                             {track.displayLabel || track.label || track.name || `Audio Track ${idx + 1}`}
                           </Text>
                           {isSelected && (
-                            <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                            <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                           )}
                         </TouchableOpacity>
                       );
@@ -3559,16 +3467,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                         flexDirection: 'row',
                         justifyContent: 'space-between',
                         alignItems: 'center',
-                        backgroundColor: !selectedSubtitleTrack ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                        backgroundColor: !selectedSubtitleTrack ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                         borderWidth: 1,
-                        borderColor: !selectedSubtitleTrack ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                        borderColor: !selectedSubtitleTrack ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                       }}
                     >
-                      <Text style={{ fontSize: moderateScale(11.5), color: !selectedSubtitleTrack ? '#38bdf8' : '#ffffff', fontWeight: !selectedSubtitleTrack ? '800' : '600' }}>
+                      <Text style={{ fontSize: moderateScale(11.5), color: !selectedSubtitleTrack ? '#FF4D58' : '#ffffff', fontWeight: !selectedSubtitleTrack ? '800' : '600' }}>
                         Off
                       </Text>
                       {!selectedSubtitleTrack && (
-                        <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                        <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                       )}
                     </TouchableOpacity>
 
@@ -3590,16 +3498,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                             flexDirection: 'row',
                             justifyContent: 'space-between',
                             alignItems: 'center',
-                            backgroundColor: isSelected ? 'rgba(56, 189, 248, 0.22)' : 'rgba(24, 24, 27, 0.85)',
+                            backgroundColor: isSelected ? 'rgba(229, 9, 20, 0.22)' : 'rgba(24, 24, 27, 0.85)',
                             borderWidth: 1,
-                            borderColor: isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.08)'
+                            borderColor: isSelected ? '#E50914' : 'rgba(255, 255, 255, 0.08)'
                           }}
                         >
-                          <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#38bdf8' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
+                          <Text style={{ fontSize: moderateScale(11.5), color: isSelected ? '#FF4D58' : '#ffffff', fontWeight: isSelected ? '800' : '600' }}>
                             {track.displayLabel || track.label || track.name || `Subtitle ${idx + 1}`}
                           </Text>
                           {isSelected && (
-                            <Ionicons name="checkmark-circle" size={scale(14)} color="#38bdf8" />
+                            <Ionicons name="checkmark-circle" size={scale(14)} color="#E50914" />
                           )}
                         </TouchableOpacity>
                       );
@@ -3614,8 +3522,18 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#000000', paddingTop: insets.top }}>
-      <StatusBar hidden={false} barStyle="light-content" translucent />
+    <View style={{ flex: 1, backgroundColor: isFullscreen ? '#000000' : '#FFFFFF' }}>
+      <StatusBar 
+        hidden={isFullscreen} 
+        barStyle={isFullscreen ? "light-content" : "dark-content"} 
+        translucent 
+        backgroundColor={isFullscreen ? "transparent" : "#FFFFFF"} 
+      />
+
+      {/* White Status Bar / Camera Notch Spacer matching Home Screen */}
+      {!isFullscreen && (
+        <View style={{ width: '100%', height: statusBarHeight, backgroundColor: '#FFFFFF' }} />
+      )}
 
       {/* TOP VIDEO PLAYER CONTAINER */}
       <View 
@@ -3649,148 +3567,81 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
         contentContainerStyle={detailStyles.scrollContent}
         nestedScrollEnabled={true}
       >
+                {/* ========================================================================= */}
+        {/* UNIFIED MOVIE & SERIES DETAIL LOWER UI (CONSTANT UP NEXT & DONATE) */}
         {/* ========================================================================= */}
-        {/* 1. PRIMARY ACTION BUTTONS: PLAY & DOWNLOAD */}
-        {/* ========================================================================= */}
-        <View style={detailStyles.actionButtonsRow}>
-          {/* Main White Play Button */}
-          <TouchableOpacity 
-            onPress={() => playVideo(currentEpisode, activeServer)}
-            activeOpacity={0.85}
-            style={detailStyles.playButton}
-          >
-            <Ionicons name="play" size={scale(18)} color="#09090b" style={{ marginRight: scale(6) }} />
-            <Text style={detailStyles.playButtonText}>
-              Play
+        <View style={detailStyles.detailModeSection}>
+          {/* Title & Metadata */}
+          <View style={detailStyles.titleSection}>
+            <Text style={detailStyles.displayTitle}>
+              {displayTitle}
             </Text>
-          </TouchableOpacity>
 
-          {/* Dark Charcoal Download Button */}
-          <TouchableOpacity 
-            onPress={handleDownloadButtonPress}
-            activeOpacity={0.85}
-            style={detailStyles.downloadButton}
-          >
-            <Ionicons name="download-outline" size={scale(18)} color="#ffffff" style={{ marginRight: scale(6) }} />
-            <Text style={detailStyles.downloadButtonText}>
-              Download
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ========================================================================= */}
-        {/* 2. SERVER SELECTOR PILLS (SERVER 1, SERVER 2, SERVER 3) */}
-        {/* ========================================================================= */}
-        <View style={detailStyles.serverSelectorRow}>
-          {servers.map((server) => {
-            const isActive = activeServer === server.id;
-            return (
-              <TouchableOpacity
-                key={server.id}
-                onPress={() => {
-                  console.log('[MovieDetailScreen] Manually selected server:', server.id);
-                  setActiveServer(server.id);
-                  setPlaybackError(null);
-                }}
-                activeOpacity={0.8}
-                style={[
-                  detailStyles.serverPill,
-                  isActive && detailStyles.serverPillActive
-                ]}
-              >
-                <Text style={[
-                  detailStyles.serverPillText,
-                  isActive && detailStyles.serverPillTextActive
-                ]}>
-                  {server.short}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* ========================================================================= */}
-        {/* 3. MOVIE & TV SERIES TITLE & METADATA ROW */}
-        {/* ========================================================================= */}
-        <View style={detailStyles.titleSection}>
-          <Text style={detailStyles.displayTitle}>
-            {displayTitle}
-          </Text>
-
-          {tagline ? (
-            <Text style={detailStyles.tagline}>
-              "{tagline}"
-            </Text>
-          ) : null}
-
-          {/* Metadata Badges line: Type • Year • Rating • Cert • Runtime • 4K */}
-          <View style={detailStyles.metadataRow}>
-            {/* Type badge */}
-            <View style={[
-              detailStyles.typeBadge,
-              isTVShow ? detailStyles.tvBadge : detailStyles.movieBadge
-            ]}>
-              <Text style={[
-                detailStyles.typeBadgeText,
-                { color: isTVShow ? '#c084fc' : '#38bdf8' }
-              ]}>
-                {isTVShow ? 'TV Series' : 'Movie'}
-              </Text>
+            {/* Metadata line: 2026 • Drama • History • 2h 6m */}
+            <View style={detailStyles.metadataRow}>
+              {releaseYear ? <Text style={detailStyles.metaText}>{releaseYear}</Text> : null}
+              {genresList && genresList.length > 0 && (
+                <>
+                  <Text style={detailStyles.metaDot}>•</Text>
+                  <Text style={detailStyles.metaText}>
+                    {genresList.slice(0, 2).map(g => g.name).join(' • ')}
+                  </Text>
+                </>
+              )}
+              {runtimeDisplay ? (
+                <>
+                  <Text style={detailStyles.metaDot}>•</Text>
+                  <Text style={detailStyles.metaText}>{runtimeDisplay}</Text>
+                </>
+              ) : null}
             </View>
 
-            {releaseYear ? (
-              <Text style={detailStyles.metaText}>
-                {releaseYear}
-              </Text>
-            ) : null}
-
-            {voteRating ? (
-              <View style={detailStyles.ratingBox}>
-                <Ionicons name="star" size={scale(11)} color="#f59e0b" style={{ marginRight: scale(3) }} />
-                <Text style={detailStyles.ratingText}>
-                  {voteRating}
-                </Text>
-              </View>
-            ) : null}
-
-            {certification ? (
-              <View style={detailStyles.certBox}>
-                <Text style={detailStyles.certText}>
-                  {certification}
-                </Text>
-              </View>
-            ) : null}
-
-            {runtimeDisplay ? (
-              <Text style={detailStyles.metaText}>
-                {runtimeDisplay}
-              </Text>
-            ) : null}
-
-            <View style={detailStyles.uhdBadge}>
-              <Text style={detailStyles.uhdBadgeText}>
-                4K UHD
-              </Text>
+            {/* Badges: [HD] [5.1] [16+] */}
+            <View style={detailStyles.badgeRow}>
+              <View style={detailStyles.badgePill}><Text style={detailStyles.badgeText}>HD</Text></View>
+              <View style={detailStyles.badgePill}><Text style={detailStyles.badgeText}>5.1</Text></View>
+              <View style={detailStyles.badgePill}><Text style={detailStyles.badgeText}>16+</Text></View>
             </View>
           </View>
 
-          {/* Genres Row */}
-          {genresList.length > 0 && (
-            <View style={detailStyles.genresRow}>
-              {genresList.map((genre) => (
-                <View 
-                  key={genre.id || genre.name}
-                  style={detailStyles.genrePill}
-                >
-                  <Text style={detailStyles.genreText}>
-                    {genre.name}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
+          {/* Action Buttons: [▶ Play] and [+ My List] */}
+          <View style={detailStyles.actionButtonsRow}>
+            {/* Play Button (Solid Red #E50914) */}
+            <TouchableOpacity 
+              onPress={handlePlayerPlayPause}
+              activeOpacity={0.85}
+              style={detailStyles.playButton}
+            >
+              <Ionicons 
+                name={hasStartedPlayback && isPlaying ? "pause" : "play"} 
+                size={scale(16)} 
+                color="#FFFFFF" 
+                style={{ marginRight: scale(6) }} 
+              />
+              <Text style={detailStyles.playButtonText}>
+                {hasStartedPlayback && isPlaying ? 'Pause' : 'Play'}
+              </Text>
+            </TouchableOpacity>
 
-          {/* Synopsis */}
+            {/* + My List Button */}
+            <TouchableOpacity 
+              onPress={() => setIsBookmarked(!isBookmarked)}
+              activeOpacity={0.8}
+              style={detailStyles.myListButton}
+            >
+              <Ionicons 
+                name={isBookmarked ? "checkmark" : "add"} 
+                size={scale(18)} 
+                color="#111827" 
+                style={{ marginRight: scale(4) }} 
+              />
+              <Text style={detailStyles.myListButtonText}>
+                {isBookmarked ? 'Added' : 'My List'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Synopsis Description */}
           {details.overview ? (
             <View style={detailStyles.synopsisContainer}>
               <Text 
@@ -3811,19 +3662,272 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               )}
             </View>
           ) : null}
+
+          {/* Server Selector Pills (Server 1, Server 2, Server 3) */}
+          <View style={detailStyles.serverSelectorRow}>
+            {servers.map((server) => {
+              const isActive = activeServer === server.id;
+              return (
+                <TouchableOpacity
+                  key={`server-pill-${server.id}`}
+                  onPress={() => handleServerChange(server.id)}
+                  activeOpacity={0.8}
+                  style={[
+                    detailStyles.serverPill,
+                    isActive && detailStyles.serverPillActive
+                  ]}
+                >
+                  <Text style={[
+                    detailStyles.serverPillText,
+                    isActive && detailStyles.serverPillTextActive
+                  ]}>
+                    {server.short}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Up Next Section: Next episode for series, related movie for movies */}
+          <View style={detailStyles.upNextSection}>
+            <Text style={detailStyles.sectionHeaderTitle}>Up Next</Text>
+            {(() => {
+              if (isTVShow) {
+                // --- SERIES LOGIC: NEXT EPISODE FROM SAME SERIES AND SEASON ---
+                const currentEpNum = currentEpisode?.episodeNumber || 1;
+                const currentSeasonNum = currentEpisode?.seasonNumber || selectedSeason || 1;
+                
+                // Search next episode in current season's episodes list
+                const currentIdx = episodesList.findIndex(
+                  e => (e.episodeNumber || 0) === currentEpNum || (e.id && currentEpisode?.id && e.id === currentEpisode?.id)
+                );
+                
+                let nextEp = null;
+                if (currentIdx >= 0 && currentIdx < episodesList.length - 1) {
+                  nextEp = episodesList[currentIdx + 1];
+                } else {
+                  nextEp = episodesList.find(e => (e.episodeNumber || 0) === currentEpNum + 1);
+                }
+
+                // If found in current season
+                if (nextEp) {
+                  const nextEpNum = nextEp.episodeNumber || (currentEpNum + 1);
+                  const epTitle = (nextEp.title && !nextEp.title.toLowerCase().startsWith('episode')) 
+                    ? `${nextEpNum}. ${nextEp.title}` 
+                    : `${nextEpNum}. ${displayTitle}`;
+                  const epSub = `S${nextEp.seasonNumber || currentSeasonNum} E${nextEpNum} • ${nextEp.duration || '55m'}`;
+                  const epThumb = nextEp.image || (nextEp.still_path ? getStillUrl(nextEp.still_path) : (details.backdrop_path ? getBackdropUrl(details.backdrop_path) : getPosterUrl(details.poster_path)));
+
+                  return (
+                    <TouchableOpacity
+                      style={detailStyles.upNextCard}
+                      activeOpacity={0.85}
+                      onPress={() => selectEpisode(nextEp)}
+                    >
+                      <Image
+                        source={{ uri: epThumb }}
+                        style={detailStyles.upNextThumb}
+                        resizeMode="cover"
+                      />
+                      <View style={detailStyles.upNextInfo}>
+                        <Text style={detailStyles.upNextTitle} numberOfLines={1}>
+                          {epTitle}
+                        </Text>
+                        <Text style={detailStyles.upNextSub}>
+                          {epSub}
+                        </Text>
+                      </View>
+                      <View style={detailStyles.upNextPlayBtn}>
+                        <Ionicons name="play" size={scale(14)} color="#FFFFFF" style={{ marginLeft: scale(1.5) }} />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }
+
+                // If this was the last episode of the season, check for next season
+                const nextSeason = seasons.find(s => s.season_number === currentSeasonNum + 1);
+                if (nextSeason) {
+                  return (
+                    <TouchableOpacity
+                      style={detailStyles.upNextCard}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        handleSeasonSelect(nextSeason.season_number);
+                        const nextEpObj = {
+                          seasonNumber: nextSeason.season_number,
+                          episodeNumber: 1,
+                          title: `1. ${displayTitle}`,
+                          duration: '55m'
+                        };
+                        selectEpisode(nextEpObj);
+                      }}
+                    >
+                      <Image
+                        source={{ uri: details.backdrop_path ? getBackdropUrl(details.backdrop_path) : getPosterUrl(details.poster_path) }}
+                        style={detailStyles.upNextThumb}
+                        resizeMode="cover"
+                      />
+                      <View style={detailStyles.upNextInfo}>
+                        <Text style={detailStyles.upNextTitle} numberOfLines={1}>
+                          Season {nextSeason.season_number} Premiere
+                        </Text>
+                        <Text style={detailStyles.upNextSub}>
+                          {`S${nextSeason.season_number} E1 • Next Season`}
+                        </Text>
+                      </View>
+                      <View style={detailStyles.upNextPlayBtn}>
+                        <Ionicons name="play" size={scale(14)} color="#FFFFFF" style={{ marginLeft: scale(1.5) }} />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }
+
+                // If episodesList is still loading or has only 1 episode, synthesize the next episode
+                const syntheticEpNum = currentEpNum + 1;
+                const syntheticEp = {
+                  seasonNumber: currentSeasonNum,
+                  episodeNumber: syntheticEpNum,
+                  title: `${syntheticEpNum}. ${displayTitle}`,
+                  duration: '55m',
+                  image: details.backdrop_path ? getBackdropUrl(details.backdrop_path) : getPosterUrl(details.poster_path)
+                };
+
+                return (
+                  <TouchableOpacity
+                    style={detailStyles.upNextCard}
+                    activeOpacity={0.85}
+                    onPress={() => selectEpisode(syntheticEp)}
+                  >
+                    <Image
+                      source={{ uri: syntheticEp.image }}
+                      style={detailStyles.upNextThumb}
+                      resizeMode="cover"
+                    />
+                    <View style={detailStyles.upNextInfo}>
+                      <Text style={detailStyles.upNextTitle} numberOfLines={1}>
+                        {syntheticEp.title}
+                      </Text>
+                      <Text style={detailStyles.upNextSub}>
+                        {`S${currentSeasonNum} E${syntheticEpNum} • 55m`}
+                      </Text>
+                    </View>
+                    <View style={detailStyles.upNextPlayBtn}>
+                      <Ionicons name="play" size={scale(14)} color="#FFFFFF" style={{ marginLeft: scale(1.5) }} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              }
+
+              // --- MOVIE LOGIC: RELATED MOVIES ---
+              const upNextMovie = (recommendations && recommendations.length > 0)
+                ? recommendations[0]
+                : (DEFAULT_RECOMMENDATIONS && DEFAULT_RECOMMENDATIONS.length > 0 ? DEFAULT_RECOMMENDATIONS[0] : null);
+
+              if (!upNextMovie) return null;
+
+              const movieYear = upNextMovie.release_date ? upNextMovie.release_date.substring(0, 4) : (upNextMovie.year || '');
+              const movieGenre = upNextMovie.genre || (Array.isArray(upNextMovie.genres) && upNextMovie.genres[0]?.name ? upNextMovie.genres[0].name : (genresList?.[0]?.name || 'Movie'));
+              const movieVote = upNextMovie.vote_average ? `★ ${Number(upNextMovie.vote_average).toFixed(1)}` : '';
+              const movieSub = [movieYear, movieGenre, movieVote].filter(Boolean).join(' • ') || 'Related Movie';
+              const movieThumb = upNextMovie.backdrop_path 
+                ? getBackdropUrl(upNextMovie.backdrop_path)
+                : (upNextMovie.poster_path ? getPosterUrl(upNextMovie.poster_path) : (upNextMovie.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=600&auto=format&fit=crop'));
+
+              return (
+                <TouchableOpacity
+                  style={detailStyles.upNextCard}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    if (onNavigateMovie) {
+                      onNavigateMovie(upNextMovie);
+                    } else {
+                      setDetails(upNextMovie);
+                      setHasStartedPlayback(false);
+                      setIsPlaying(false);
+                    }
+                  }}
+                >
+                  <Image
+                    source={{ uri: movieThumb }}
+                    style={detailStyles.upNextThumb}
+                    resizeMode="cover"
+                  />
+                  <View style={detailStyles.upNextInfo}>
+                    <Text style={detailStyles.upNextTitle} numberOfLines={1}>
+                      {upNextMovie.title || upNextMovie.name || 'Related Movie'}
+                    </Text>
+                    <Text style={detailStyles.upNextSub}>
+                      {movieSub}
+                    </Text>
+                  </View>
+                  <View style={detailStyles.upNextPlayBtn}>
+                    <Ionicons name="play" size={scale(14)} color="#FFFFFF" style={{ marginLeft: scale(1.5) }} />
+                  </View>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
+
+          {/* Support NexPlay Card dynamically below Up Next */}
+          <View style={detailStyles.supportBannerCard}>
+            <View style={detailStyles.supportTopRow}>
+              <View style={detailStyles.supportHeartCircle}>
+                <Ionicons name="heart" size={scale(18)} color="#E50914" />
+              </View>
+              <View style={detailStyles.supportTextWrapper}>
+                <Text style={detailStyles.supportTitle}>Support NexPlay</Text>
+                <Text style={detailStyles.supportSubtitle}>
+                  Help us keep the streaming alive. Your support means a lot!
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={detailStyles.donateNowBtn}
+              activeOpacity={0.85}
+              onPress={() => Alert.alert('Support NexPlay ❤️', 'Thank you for your generous support to help keep streaming free and fast!')}
+            >
+              <Text style={detailStyles.donateNowText}>Donate Now</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ========================================================================= */}
-        {/* 4. SEASONS & EPISODES (FOR TV SERIES) */}
+        {/* DETAIL TABS: EPISODES (SERIES ONLY) | DETAILS | MORE LIKE THIS */}
         {/* ========================================================================= */}
-        {isTVShow && (
-          <View style={detailStyles.seasonsSection}>
-            <Text style={detailStyles.sectionHeaderTitle}>
-              Seasons & Episodes
-            </Text>
+        <View style={detailStyles.tabsHeaderRow}>
+          {(isTVShow ? [
+            { id: 'episodes', label: 'Episodes' },
+            { id: 'details', label: 'Details' },
+            { id: 'more', label: 'More Like This' },
+          ] : [
+            { id: 'details', label: 'Details' },
+            { id: 'more', label: 'More Like This' },
+          ]).map((tab) => {
+            const isTabActive = activeDetailTab === tab.id;
+            return (
+              <TouchableOpacity
+                key={tab.id}
+                onPress={() => setActiveDetailTab(tab.id)}
+                style={detailStyles.tabBtn}
+                activeOpacity={0.8}
+              >
+                <Text style={[
+                  detailStyles.tabText,
+                  isTabActive ? detailStyles.tabTextActive : detailStyles.tabTextInactive
+                ]}>
+                  {tab.label}
+                </Text>
+                {isTabActive && <View style={detailStyles.activeTabIndicator} />}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
+        {/* 1. EPISODES TAB CONTENT (SERIES ONLY) */}
+        {isTVShow && activeDetailTab === 'episodes' && (
+          <View style={detailStyles.tabBodyContainer}>
             {/* Season Dropdown Selector */}
-            {seasons.length > 0 && (
+            {isTVShow && seasons.length > 0 && (
               <TouchableOpacity 
                 onPress={() => setIsSeasonModalVisible(true)}
                 style={detailStyles.seasonDropdown}
@@ -3832,160 +3936,153 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                 <Text style={detailStyles.seasonDropdownText}>
                   Season {selectedSeason}
                 </Text>
-                <Ionicons name="chevron-down" size={scale(13)} color="#d4d4d8" />
+                <Ionicons name="chevron-down" size={scale(13)} color="#FFFFFF" />
               </TouchableOpacity>
             )}
 
-            {/* Episodes Horizontal ScrollView */}
+            {/* Episode List matching Screen 5 */}
             {episodesList.length > 0 ? (
-              <ScrollView 
-                horizontal 
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingRight: scale(10) }}
-                nestedScrollEnabled={true}
-              >
+              <View style={detailStyles.episodeVerticalList}>
                 {episodesList.map((item, index) => {
                   const isPlayingThisEp = currentEpisode.id === item.id || currentEpisode.episodeNumber === item.episodeNumber;
+                  const epNum = item.episodeNumber || (index + 1);
+                  const epTitle = item.title || item.name || `Episode ${epNum}`;
+                  const epDuration = item.duration || '55m';
+
                   return (
-                    <TouchableOpacity 
-                      key={`ep-${item.id || index}`}
+                    <TouchableOpacity
+                      key={`ep-row-${item.id || index}`}
                       onPress={() => selectEpisode(item)}
-                      style={detailStyles.episodeCard}
+                      style={detailStyles.episodeRowCard}
                       activeOpacity={0.8}
                     >
-                      <View style={detailStyles.episodeImageWrapper}>
-                        <Image 
-                          source={{ uri: item.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=600&auto=format&fit=crop' }} 
-                          style={detailStyles.episodeImage}
-                          resizeMode="cover"
-                        />
-                        {/* Play overlay button */}
-                        <View style={detailStyles.episodePlayOverlay}>
-                          <View style={detailStyles.episodePlayCircle}>
-                            {isPlayingThisEp && isBufferingState ? (
-                              <ActivityIndicator size="small" color="#ffffff" />
-                            ) : (
-                              <Ionicons 
-                                name={isPlayingThisEp && isPlaying ? "pause" : "play"} 
-                                size={scale(13)} 
-                                color="#ffffff" 
-                                style={(!isPlayingThisEp || !isPlaying) ? { marginLeft: scale(1.5) } : null}
-                              />
-                            )}
-                          </View>
-                        </View>
-                        {item.isFutureAir && (
-                          <View style={{ position: 'absolute', top: scale(4), right: scale(4), backgroundColor: 'rgba(217, 119, 6, 0.92)', borderRadius: scale(4), paddingHorizontal: scale(4), paddingVertical: scale(1.5) }}>
-                            <Text style={{ color: '#ffffff', fontSize: moderateScale(7.5), fontWeight: '800' }}>UPCOMING</Text>
-                          </View>
+                      <Image
+                        source={{ uri: item.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=600&auto=format&fit=crop' }}
+                        style={detailStyles.episodeRowThumb}
+                        resizeMode="cover"
+                      />
+                      <View style={detailStyles.episodeRowInfo}>
+                        <Text style={detailStyles.episodeRowTitle} numberOfLines={1}>
+                          {epNum}. {displayTitle}
+                        </Text>
+                        <Text style={detailStyles.episodeRowSubtitle}>
+                          S{selectedSeason || 1} E{epNum} • {epDuration}
+                        </Text>
+                      </View>
+                      {/* Play Circle Icon on Right (Screen 5 style) */}
+                      <View style={detailStyles.episodePlayRightCircle}>
+                        {isPlayingThisEp && isBufferingState ? (
+                          <ActivityIndicator size="small" color="#E50914" />
+                        ) : (
+                          <Ionicons 
+                            name={isPlayingThisEp && isPlaying ? "pause" : "play"} 
+                            size={scale(14)} 
+                            color="#E50914" 
+                            style={(!isPlayingThisEp || !isPlaying) ? { marginLeft: scale(1.5) } : null}
+                          />
                         )}
                       </View>
-                      
-                      {/* Episode Title */}
-                      <Text 
-                        numberOfLines={1} 
-                        style={[
-                          detailStyles.episodeTitleText,
-                          { color: isPlayingThisEp ? '#38bdf8' : '#ffffff', fontWeight: isPlayingThisEp ? '700' : '600' }
-                        ]}
-                      >
-                        {item.episodeNumber ? `${item.episodeNumber}. ` : ''}{item.name || item.title || `Episode ${index + 1}`}
-                      </Text>
-
-                      {/* Episode Air Date / Runtime Subtitle */}
-                      <Text numberOfLines={1} style={{ fontSize: moderateScale(9), color: item.isFutureAir ? '#fbbf24' : '#9ca3af', marginTop: verticalScale(2) }}>
-                        {item.isFutureAir ? `Airing ${item.airDateFormatted}` : (item.airDateFormatted ? `${item.duration || '45m'} • ${item.airDateFormatted}` : (item.duration || '45m'))}
-                      </Text>
                     </TouchableOpacity>
                   );
                 })}
-              </ScrollView>
+              </View>
             ) : (
-              <View style={{ padding: scale(14), backgroundColor: '#18181b', borderRadius: scale(10), borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.08)', marginHorizontal: scale(16), alignItems: 'center' }}>
-                <Ionicons name="calendar-outline" size={scale(22)} color="#9ca3af" style={{ marginBottom: verticalScale(4) }} />
-                <Text style={{ color: '#ffffff', fontSize: moderateScale(12), fontWeight: '700', textAlign: 'center' }}>
-                  No Episodes Released Yet
+              <View style={{ paddingVertical: verticalScale(20), alignItems: 'center' }}>
+                <Ionicons name="film-outline" size={scale(32)} color="#6B7280" style={{ marginBottom: verticalScale(6) }} />
+                <Text style={{ color: '#FFFFFF', fontSize: moderateScale(13), fontWeight: '700' }}>
+                  Full Feature Available
                 </Text>
-                <Text style={{ color: '#9ca3af', fontSize: moderateScale(10.5), marginTop: verticalScale(2), textAlign: 'center' }}>
-                  Season {selectedSeason} episodes are currently unannounced or will air in upcoming dates.
+                <Text style={{ color: '#9CA3AF', fontSize: moderateScale(11), marginTop: verticalScale(2) }}>
+                  Tap the Play button above to start watching.
                 </Text>
               </View>
             )}
           </View>
         )}
 
-        {/* ========================================================================= */}
-        {/* 5. CAST SECTION */}
-        {/* ========================================================================= */}
-        <View style={detailStyles.castSection}>
-          <Text style={detailStyles.sectionHeaderTitle}>Cast</Text>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingRight: scale(10) }}
-            nestedScrollEnabled={true}
-          >
-            {(cast.length > 0 ? cast : DEFAULT_CAST).map((item, index) => (
-              <View key={`cast-${item.id || index}`} style={detailStyles.castItem}>
-                <View style={detailStyles.castAvatarWrapper}>
-                  <Image 
-                    source={{ uri: getCastImageUri(item) }} 
-                    style={detailStyles.castAvatar}
-                    resizeMode="cover"
-                  />
-                </View>
-                <Text 
-                  numberOfLines={2} 
-                  style={detailStyles.castName}
-                >
-                  {item.name}
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
+        {/* 2. DETAILS TAB CONTENT */}
+        {activeDetailTab === 'details' && (
+          <View style={detailStyles.tabBodyContainer}>
+            <View style={detailStyles.detailMetaCard}>
+              {details.overview ? (
+                <>
+                  <Text style={detailStyles.detailMetaLabel}>Storyline</Text>
+                  <Text style={[detailStyles.detailMetaValue, { lineHeight: moderateScale(19), marginBottom: verticalScale(12), color: '#1F2937' }]}>
+                    {details.overview}
+                  </Text>
+                </>
+              ) : null}
 
-        {/* ========================================================================= */}
-        {/* 6. MORE LIKE THIS / RECOMMENDATIONS */}
-        {/* ========================================================================= */}
-        <View style={detailStyles.recommendationsSection}>
-          <Text style={detailStyles.sectionHeaderTitle}>More Like This</Text>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingRight: scale(10) }}
-            nestedScrollEnabled={true}
-          >
-            {(recommendations.length > 0 ? recommendations : DEFAULT_RECOMMENDATIONS).map((item, index) => (
-              <TouchableOpacity 
-                key={`rec-${item.id || index}`}
-                onPress={() => {
-                  if (onNavigateMovie) {
-                    onNavigateMovie(item);
-                  } else {
-                    setDetails(item);
-                  }
-                }}
-                style={detailStyles.recCard}
-                activeOpacity={0.8}
+              <Text style={detailStyles.detailMetaLabel}>Director</Text>
+              <Text style={detailStyles.detailMetaValue}>{getDirector(crew) || 'Denis Villeneuve'}</Text>
+              
+              <Text style={detailStyles.detailMetaLabel}>Audio</Text>
+              <Text style={detailStyles.detailMetaValue}>English [Original], Spanish, French, Hindi</Text>
+
+              <Text style={detailStyles.detailMetaLabel}>Subtitles</Text>
+              <Text style={detailStyles.detailMetaValue}>English, Spanish, French, German, Arabic</Text>
+            </View>
+
+            {/* Cast Section */}
+            <View style={detailStyles.castSection}>
+              <Text style={detailStyles.sectionHeaderTitle}>Cast</Text>
+              <ScrollView 
+                horizontal 
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingRight: scale(10) }}
+                nestedScrollEnabled={true}
               >
-                <View style={detailStyles.recImageWrapper}>
-                  <Image 
-                    source={{ uri: getRecImageUri(item) }} 
-                    style={detailStyles.recImage}
-                    resizeMode="cover"
-                  />
-                </View>
-                <Text 
-                  numberOfLines={1} 
-                  style={detailStyles.recTitle}
+                {(cast.length > 0 ? cast : DEFAULT_CAST).map((item, index) => (
+                  <View key={`cast-${item.id || index}`} style={detailStyles.castItem}>
+                    <View style={detailStyles.castAvatarWrapper}>
+                      <Image 
+                        source={{ uri: getCastImageUri(item) }} 
+                        style={detailStyles.castAvatar}
+                        resizeMode="cover"
+                      />
+                    </View>
+                    <Text numberOfLines={2} style={detailStyles.castName}>
+                      {item.name}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        )}
+
+        {/* 3. MORE LIKE THIS TAB CONTENT */}
+        {activeDetailTab === 'more' && (
+          <View style={detailStyles.tabBodyContainer}>
+            <View style={detailStyles.recommendationsGrid}>
+              {(recommendations.length > 0 ? recommendations : DEFAULT_RECOMMENDATIONS).map((item, index) => (
+                <TouchableOpacity 
+                  key={`rec-${item.id || index}`}
+                  onPress={() => {
+                    if (onNavigateMovie) {
+                      onNavigateMovie(item);
+                    } else {
+                      setDetails(item);
+                    }
+                  }}
+                  style={detailStyles.recCardGrid}
+                  activeOpacity={0.8}
                 >
-                  {item.title || item.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
+                  <View style={detailStyles.recImageWrapper}>
+                    <Image 
+                      source={{ uri: getRecImageUri(item) }} 
+                      style={detailStyles.recImage}
+                      resizeMode="cover"
+                    />
+                  </View>
+                  <Text numberOfLines={1} style={detailStyles.recTitle}>
+                    {item.title || item.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       {/* Season Selection Modal */}
@@ -4024,7 +4121,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   >
                     <Text style={[
                       detailStyles.seasonOptionText,
-                      { color: isSelected ? '#38bdf8' : '#ffffff' }
+                      { color: isSelected ? '#E50914' : '#ffffff' }
                     ]}>
                       {season.name || `Season ${season.season_number}`}
                     </Text>
@@ -4039,190 +4136,6 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
         </Pressable>
       </Modal>
 
-      {/* 2. DOWNLOAD QUALITY & RESUMABLE MANAGER MODAL */}
-      <Modal
-        visible={isDownloadModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setIsDownloadModalVisible(false)}
-      >
-        <Pressable 
-          onPress={() => setIsDownloadModalVisible(false)}
-          style={detailStyles.modalBackdrop}
-        >
-          <Pressable 
-            onPress={(e) => e.stopPropagation()}
-            style={detailStyles.downloadModalCard}
-          >
-            {/* Modal Header */}
-            <View style={detailStyles.modalHeader}>
-              <View style={{ flex: 1, marginRight: scale(10) }}>
-                <Text style={detailStyles.modalTitle} numberOfLines={1}>
-                  {displayTitle}
-                </Text>
-                <Text style={detailStyles.downloadModalSubtitle} numberOfLines={1}>
-                  {isTVShow 
-                    ? `Season ${currentEpisode?.seasonNumber || 1} • Episode ${currentEpisode?.episodeNumber || 1}${currentEpisode?.name ? ` : ${currentEpisode.name}` : ''}`
-                    : `${releaseYear || ''} • Direct Device Download`}
-                </Text>
-              </View>
-              <TouchableOpacity 
-                style={detailStyles.modalCloseBtn}
-                onPress={() => setIsDownloadModalVisible(false)}
-              >
-                <Ionicons name="close" size={scale(20)} color="#a1a1aa" />
-              </TouchableOpacity>
-            </View>
-
-            {/* Modal Content */}
-            {isScrapingForDownload ? (
-              <View style={detailStyles.downloadLoadingContainer}>
-                <ActivityIndicator size="large" color="#38bdf8" />
-                <Text style={detailStyles.downloadLoadingText}>
-                  Extracting available video qualities & file sizes...
-                </Text>
-              </View>
-            ) : (
-              <ScrollView style={{ maxHeight: verticalScale(360) }} showsVerticalScrollIndicator={false}>
-                {(() => {
-                  const qMap = (resolvedQualities && typeof resolvedQualities === 'object') ? resolvedQualities : {};
-                  const sizeMap = resolvedQualitySizes || {};
-                  const standardKeys = [
-                    { key: '4k', label: '4K Ultra HD (2160p)', defaultSize: '4.5 GB' },
-                    { key: '1080p', label: 'Full HD (1080p)', defaultSize: '2.1 GB' },
-                    { key: '720p', label: 'HD (720p)', defaultSize: '950 MB' },
-                    { key: '480p', label: 'SD (480p)', defaultSize: '450 MB' }
-                  ];
-
-                  const availableItems = [];
-                  for (const std of standardKeys) {
-                    const qUrl = qMap[std.key] || qMap[std.key.replace('p', '')] || (std.key === '4k' && (qMap['2160p'] || qMap['2160']));
-                    if (qUrl) {
-                      availableItems.push({
-                        quality: std.key,
-                        label: std.label,
-                        url: qUrl,
-                        size: sizeMap[std.key] || std.defaultSize
-                      });
-                    }
-                  }
-
-                  // Non-standard keys
-                  Object.keys(qMap).forEach(k => {
-                    const lowerK = k.toLowerCase();
-                    if (!['4k', '2160p', '2160', '1080p', '1080', '720p', '720', '480p', '480', 'auto'].includes(lowerK)) {
-                      availableItems.push({
-                        quality: lowerK,
-                        label: `${k.toUpperCase()} Quality`,
-                        url: qMap[k],
-                        size: sizeMap[lowerK] || '1.5 GB'
-                      });
-                    }
-                  });
-
-                  if (availableItems.length === 0) {
-                    return (
-                      <View style={detailStyles.downloadLoadingContainer}>
-                        <Ionicons name="alert-circle-outline" size={scale(36)} color="#f59e0b" />
-                        <Text style={detailStyles.downloadLoadingText}>
-                          Play the video once or select a server to load download links.
-                        </Text>
-                      </View>
-                    );
-                  }
-
-                  return availableItems.map((item) => {
-                    const downloadId = `${movie.id}_${isTVShow ? `s${currentEpisode?.seasonNumber || 1}e${currentEpisode?.episodeNumber || 1}` : 'movie'}_${item.quality}`;
-                    const activeDownload = activeDownloads.find(d => d.id === downloadId);
-                    const isCompleted = activeDownload?.status === 'completed';
-                    const isDownloading = activeDownload?.status === 'downloading';
-                    const isPaused = activeDownload?.status === 'paused';
-                    const progressPct = Math.round((activeDownload?.progress || 0) * 100);
-
-                    return (
-                      <View 
-                        key={`dl-item-${item.quality}`}
-                        style={detailStyles.qualityDownloadCard}
-                      >
-                        <View style={detailStyles.qualityDownloadInfo}>
-                          <View style={detailStyles.qualityTitleRow}>
-                            <Text style={detailStyles.qualityDownloadTitle}>
-                              {item.label}
-                            </Text>
-                            <View style={detailStyles.sizePill}>
-                              <Text style={detailStyles.sizePillText}>{item.size}</Text>
-                            </View>
-                          </View>
-
-                          {/* Progress bar if downloading / paused */}
-                          {(isDownloading || isPaused) && (
-                            <View style={detailStyles.modalProgressContainer}>
-                              <View style={detailStyles.modalProgressBarBg}>
-                                <View 
-                                  style={[
-                                    detailStyles.modalProgressBarFill, 
-                                    { 
-                                      width: `${Math.min(Math.max(progressPct, 4), 100)}%`,
-                                      backgroundColor: isPaused ? '#eab308' : '#38bdf8' 
-                                    }
-                                  ]} 
-                                />
-                              </View>
-                              <View style={detailStyles.modalProgressTextRow}>
-                                <Text style={detailStyles.modalProgressPct}>
-                                  {isPaused ? 'Paused' : `${progressPct}%`}
-                                </Text>
-                                <Text style={detailStyles.modalProgressBytes}>
-                                  {DownloadManager.formatBytes(activeDownload.downloadedBytes || 0)} / {item.size}
-                                </Text>
-                              </View>
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Actions */}
-                        <View style={detailStyles.qualityDownloadActions}>
-                          {isCompleted ? (
-                            <View style={detailStyles.completedBadge}>
-                              <Ionicons name="checkmark-circle" size={scale(18)} color="#22c55e" />
-                              <Text style={detailStyles.completedBadgeText}>Ready</Text>
-                            </View>
-                          ) : isDownloading ? (
-                            <TouchableOpacity
-                              style={detailStyles.modalControlBtn}
-                              onPress={() => DownloadManager.pauseDownload(downloadId)}
-                              activeOpacity={0.8}
-                            >
-                              <Ionicons name="pause" size={scale(15)} color="#ffffff" />
-                            </TouchableOpacity>
-                          ) : isPaused ? (
-                            <TouchableOpacity
-                              style={[detailStyles.modalControlBtn, detailStyles.modalResumeBtn]}
-                              onPress={() => DownloadManager.resumeDownload(downloadId)}
-                              activeOpacity={0.8}
-                            >
-                              <Ionicons name="play" size={scale(15)} color="#ffffff" />
-                            </TouchableOpacity>
-                          ) : (
-                            <TouchableOpacity
-                              style={detailStyles.modalStartDownloadBtn}
-                              onPress={() => handleStartQualityDownload(item.quality, item.url, item.size)}
-                              activeOpacity={0.85}
-                            >
-                              <Ionicons name="arrow-down" size={scale(14)} color="#09090b" />
-                              <Text style={detailStyles.modalStartDownloadText}>Download</Text>
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      </View>
-                    );
-                  });
-                })()}
-              </ScrollView>
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -4230,94 +4143,37 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
 const detailStyles = StyleSheet.create({
   scrollContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#FFFFFF',
   },
   scrollContent: {
     paddingHorizontal: scale(16),
     paddingTop: verticalScale(14),
     paddingBottom: verticalScale(110),
+    backgroundColor: '#FFFFFF',
   },
-  actionButtonsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: scale(10),
+  // Active Player Lower UI (Screen 6)
+  activePlayerSection: {
+    marginBottom: verticalScale(12),
+  },
+  activePlayerHeader: {
     marginBottom: verticalScale(14),
   },
-  playButton: {
-    flex: 1,
-    height: verticalScale(44),
-    backgroundColor: '#ffffff',
-    borderRadius: scale(24),
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#ffffff',
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  playButtonText: {
-    color: '#09090b',
-    fontSize: moderateScale(14),
-    fontWeight: '800',
-    letterSpacing: 0.1,
-  },
-  downloadButton: {
-    flex: 1,
-    height: verticalScale(44),
-    backgroundColor: '#242426',
-    borderRadius: scale(24),
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  downloadButtonText: {
-    color: '#f3f4f6',
-    fontSize: moderateScale(14),
-    fontWeight: '700',
-    letterSpacing: 0.1,
-  },
-  serverSelectorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: scale(8),
-    marginBottom: verticalScale(14),
-  },
-  serverPill: {
-    paddingHorizontal: scale(14),
-    paddingVertical: verticalScale(6),
-    borderRadius: scale(18),
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-  },
-  serverPillActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.14)',
-    borderColor: '#38bdf8',
-  },
-  serverPillText: {
-    color: '#a1a1aa',
-    fontSize: moderateScale(11.5),
-    fontWeight: '600',
-  },
-  serverPillTextActive: {
-    color: '#38bdf8',
-    fontWeight: '800',
+  // Detail Mode Section (Screen 5)
+  detailModeSection: {
+    marginBottom: verticalScale(10),
   },
   titleSection: {
-    marginBottom: verticalScale(16),
+    marginBottom: verticalScale(12),
   },
   displayTitle: {
-    color: '#ffffff',
-    fontSize: moderateScale(21),
+    color: '#111827',
+    fontSize: moderateScale(23),
     fontWeight: '900',
-    letterSpacing: -0.3,
-    marginBottom: verticalScale(3),
+    letterSpacing: -0.4,
+    marginBottom: verticalScale(4),
   },
   tagline: {
-    color: '#9ca3af',
+    color: '#6B7280',
     fontSize: moderateScale(12),
     fontStyle: 'italic',
     marginBottom: verticalScale(6),
@@ -4326,177 +4182,314 @@ const detailStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: scale(7),
-    marginTop: verticalScale(4),
-  },
-  typeBadge: {
-    paddingHorizontal: scale(7),
-    paddingVertical: verticalScale(2),
-    borderRadius: scale(4),
-    borderWidth: 1,
-  },
-  movieBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.14)',
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-  },
-  tvBadge: {
-    backgroundColor: 'rgba(168, 85, 247, 0.14)',
-    borderColor: 'rgba(168, 85, 247, 0.35)',
-  },
-  typeBadgeText: {
-    fontSize: moderateScale(9.5),
-    fontWeight: '800',
-    textTransform: 'uppercase',
+    gap: scale(6),
+    marginTop: verticalScale(2),
+    marginBottom: verticalScale(8),
   },
   metaText: {
-    color: '#d4d4d8',
-    fontSize: moderateScale(12),
+    color: '#4B5563',
+    fontSize: moderateScale(12.5),
     fontWeight: '600',
   },
-  ratingBox: {
+  metaDot: {
+    color: '#9CA3AF',
+    fontSize: moderateScale(12),
+  },
+  badgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    paddingHorizontal: scale(5.5),
+    gap: scale(6),
+    marginTop: verticalScale(2),
+  },
+  badgePill: {
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: scale(6),
     paddingVertical: verticalScale(2),
     borderRadius: scale(4),
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: '#E5E7EB',
   },
-  ratingText: {
-    color: '#f59e0b',
-    fontSize: moderateScale(11.5),
-    fontWeight: '800',
-  },
-  certBox: {
-    backgroundColor: '#27272a',
-    paddingHorizontal: scale(5),
-    paddingVertical: verticalScale(2),
-    borderRadius: scale(4),
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.10)',
-  },
-  certText: {
-    color: '#d4d4d8',
+  badgeText: {
+    color: '#111827',
     fontSize: moderateScale(9.5),
-    fontWeight: '700',
-  },
-  uhdBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    paddingHorizontal: scale(5.5),
-    paddingVertical: verticalScale(2),
-    borderRadius: scale(4),
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-  },
-  uhdBadgeText: {
-    color: '#38bdf8',
-    fontSize: moderateScale(9),
     fontWeight: '800',
   },
-  genresRow: {
+  // Action Buttons matching Screen 5: [▶ Play] (Red) and [+ My List]
+  actionButtonsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: scale(5),
-    marginTop: verticalScale(9),
+    alignItems: 'center',
+    gap: scale(12),
+    marginVertical: verticalScale(14),
   },
-  genrePill: {
-    backgroundColor: '#18181b',
-    paddingHorizontal: scale(9),
-    paddingVertical: verticalScale(3.5),
-    borderRadius: scale(12),
+  playButton: {
+    flex: 1,
+    height: verticalScale(42),
+    backgroundColor: '#E50914',
+    borderRadius: scale(21),
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#E50914',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  playButtonText: {
+    color: '#ffffff',
+    fontSize: moderateScale(14),
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  myListButton: {
+    flex: 1,
+    height: verticalScale(42),
+    backgroundColor: '#F3F4F6',
+    borderRadius: scale(21),
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: '#E5E7EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  genreText: {
-    color: '#d4d4d8',
-    fontSize: moderateScale(11),
-    fontWeight: '500',
-  },
-  synopsisContainer: {
-    marginTop: verticalScale(10),
-  },
-  synopsisText: {
-    color: '#a1a1aa',
-    fontSize: moderateScale(12.5),
-    lineHeight: moderateScale(18),
-  },
-  synopsisToggle: {
-    color: '#38bdf8',
-    fontSize: moderateScale(12),
+  myListButtonText: {
+    color: '#111827',
+    fontSize: moderateScale(14),
     fontWeight: '700',
-    marginTop: verticalScale(3),
   },
-  seasonsSection: {
-    marginBottom: verticalScale(18),
+  // Support NexPlay Banner matching Screen 6
+  supportBannerCard: {
+    backgroundColor: '#FFF1F2',
+    borderWidth: 1,
+    borderColor: '#FECDD3',
+    borderRadius: scale(16),
+    padding: scale(14),
+    marginBottom: verticalScale(16),
+  },
+  supportTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    marginBottom: verticalScale(10),
+  },
+  supportHeartCircle: {
+    width: scale(36),
+    height: scale(36),
+    borderRadius: scale(18),
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#FECDD3',
+  },
+  supportTextWrapper: {
+    flex: 1,
+  },
+  supportTitle: {
+    color: '#111827',
+    fontSize: moderateScale(13.5),
+    fontWeight: '800',
+  },
+  supportSubtitle: {
+    color: '#4B5563',
+    fontSize: moderateScale(11),
+    lineHeight: moderateScale(15),
+    marginTop: verticalScale(1),
+  },
+  donateNowBtn: {
+    backgroundColor: '#E50914',
+    paddingVertical: verticalScale(8),
+    borderRadius: scale(18),
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#E50914',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  donateNowText: {
+    color: '#ffffff',
+    fontSize: moderateScale(13),
+    fontWeight: '800',
+  },
+  // Up Next Section matching Screen 6
+  upNextSection: {
+    marginBottom: verticalScale(16),
   },
   sectionHeaderTitle: {
-    color: '#ffffff',
+    color: '#111827',
     fontSize: moderateScale(16),
     fontWeight: '800',
-    marginBottom: verticalScale(9),
+    marginBottom: verticalScale(10),
+    letterSpacing: -0.3,
   },
+  upNextCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: scale(14),
+    padding: scale(8),
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  upNextThumb: {
+    width: scale(96),
+    height: verticalScale(58),
+    borderRadius: scale(10),
+    backgroundColor: '#E5E7EB',
+  },
+  upNextInfo: {
+    flex: 1,
+    marginLeft: scale(12),
+  },
+  upNextTitle: {
+    color: '#111827',
+    fontSize: moderateScale(13.5),
+    fontWeight: '700',
+    marginBottom: verticalScale(2),
+  },
+  upNextSub: {
+    color: '#6B7280',
+    fontSize: moderateScale(11.5),
+    fontWeight: '500',
+  },
+  upNextPlayBtn: {
+    width: scale(32),
+    height: scale(32),
+    borderRadius: scale(16),
+    backgroundColor: '#E50914',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: scale(4),
+  },
+  // Tabs row: Episodes | Details | More Like This
+  tabsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    marginBottom: verticalScale(14),
+  },
+  tabBtn: {
+    paddingVertical: verticalScale(10),
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    minWidth: scale(80),
+  },
+  tabText: {
+    fontSize: moderateScale(13.5),
+  },
+  tabTextActive: {
+    color: '#111827',
+    fontWeight: '800',
+  },
+  tabTextInactive: {
+    color: '#6B7280',
+    fontWeight: '600',
+  },
+  activeTabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    height: verticalScale(2.5),
+    width: '100%',
+    backgroundColor: '#E50914',
+    borderRadius: scale(2),
+  },
+  tabBodyContainer: {
+    marginBottom: verticalScale(20),
+  },
+  // Episodes list
   seasonDropdown: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#18181b',
+    backgroundColor: '#F3F4F6',
     paddingHorizontal: scale(12),
     paddingVertical: verticalScale(6),
     borderRadius: scale(16),
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderColor: '#E5E7EB',
     alignSelf: 'flex-start',
-    marginBottom: verticalScale(10),
+    marginBottom: verticalScale(12),
     gap: scale(5),
   },
   seasonDropdownText: {
-    color: '#ffffff',
+    color: '#111827',
     fontSize: moderateScale(12),
     fontWeight: '700',
   },
-  episodeCard: {
-    width: scale(135),
-    marginRight: scale(10),
+  episodeVerticalList: {
+    gap: verticalScale(8),
   },
-  episodeImageWrapper: {
-    width: scale(135),
-    height: verticalScale(78),
-    borderRadius: scale(8),
-    overflow: 'hidden',
-    backgroundColor: '#18181b',
-    position: 'relative',
+  episodeRowCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: scale(12),
+    padding: scale(8),
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: '#E5E7EB',
   },
-  episodeImage: {
-    width: '100%',
-    height: '100%',
+  episodeRowThumb: {
+    width: scale(92),
+    height: verticalScale(56),
+    borderRadius: scale(8),
+    backgroundColor: '#E5E7EB',
   },
-  episodePlayOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  episodeRowInfo: {
+    flex: 1,
+    marginLeft: scale(12),
   },
-  episodePlayCircle: {
-    width: scale(26),
-    height: scale(26),
-    borderRadius: scale(13),
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  episodeRowTitle: {
+    color: '#111827',
+    fontSize: moderateScale(13),
+    fontWeight: '700',
+    marginBottom: verticalScale(3),
   },
-  episodeTitleText: {
-    fontSize: moderateScale(11.5),
-    marginTop: verticalScale(5),
+  episodeRowSubtitle: {
+    color: '#6B7280',
+    fontSize: moderateScale(11),
     fontWeight: '500',
   },
+  episodePlayRightCircle: {
+    width: scale(30),
+    height: scale(30),
+    borderRadius: scale(15),
+    backgroundColor: '#ffffff',
+    borderWidth: 1.5,
+    borderColor: '#E50914',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: scale(4),
+  },
+  // Details tab card
+  detailMetaCard: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: scale(14),
+    padding: scale(14),
+    marginBottom: verticalScale(14),
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  detailMetaLabel: {
+    color: '#E50914',
+    fontSize: moderateScale(11),
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginTop: verticalScale(4),
+    letterSpacing: 0.5,
+  },
+  detailMetaValue: {
+    color: '#111827',
+    fontSize: moderateScale(13),
+    fontWeight: '500',
+    marginBottom: verticalScale(8),
+    marginTop: verticalScale(1),
+  },
   castSection: {
-    marginBottom: verticalScale(18),
+    marginTop: verticalScale(8),
   },
   castItem: {
     width: scale(68),
@@ -4508,48 +4501,96 @@ const detailStyles = StyleSheet.create({
     height: scale(58),
     borderRadius: scale(29),
     overflow: 'hidden',
-    backgroundColor: '#27272a',
+    backgroundColor: '#F3F4F6',
     marginBottom: verticalScale(5),
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.10)',
+    borderColor: '#E5E7EB',
   },
   castAvatar: {
     width: '100%',
     height: '100%',
   },
   castName: {
-    color: '#d4d4d8',
+    color: '#374151',
     fontSize: moderateScale(10.5),
     textAlign: 'center',
     fontWeight: '500',
     lineHeight: moderateScale(13.5),
   },
-  recommendationsSection: {
-    marginBottom: verticalScale(24),
+  // Recommendations Grid
+  recommendationsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: scale(10),
   },
-  recCard: {
-    width: scale(105),
-    marginRight: scale(10),
+  recCardGrid: {
+    width: (SCREEN_WIDTH - scale(52)) / 3,
+    marginBottom: verticalScale(12),
   },
   recImageWrapper: {
-    width: scale(105),
-    height: verticalScale(152),
+    width: '100%',
+    height: verticalScale(140),
     borderRadius: scale(10),
     overflow: 'hidden',
-    backgroundColor: '#18181b',
+    backgroundColor: '#F3F4F6',
     marginBottom: verticalScale(5),
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: '#E5E7EB',
   },
   recImage: {
     width: '100%',
     height: '100%',
   },
   recTitle: {
-    color: '#e4e4e7',
+    color: '#111827',
     fontSize: moderateScale(11.5),
     fontWeight: '600',
   },
+  // Common Elements
+  serverSelectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(8),
+    marginVertical: verticalScale(10),
+  },
+  serverPill: {
+    paddingHorizontal: scale(14),
+    paddingVertical: verticalScale(6),
+    borderRadius: scale(18),
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#F3F4F6',
+  },
+  serverPillActive: {
+    backgroundColor: '#FFF1F2',
+    borderColor: '#E50914',
+  },
+  serverPillText: {
+    color: '#374151',
+    fontSize: moderateScale(11.5),
+    fontWeight: '600',
+  },
+  serverPillTextActive: {
+    color: '#E50914',
+    fontWeight: '800',
+  },
+  synopsisContainer: {
+    marginTop: verticalScale(6),
+    marginBottom: verticalScale(8),
+  },
+  synopsisText: {
+    color: '#1F2937',
+    fontSize: moderateScale(13),
+    lineHeight: moderateScale(19),
+    fontWeight: '400',
+  },
+  synopsisToggle: {
+    color: '#E50914',
+    fontSize: moderateScale(12),
+    fontWeight: '700',
+    marginTop: verticalScale(3),
+  },
+  // Modal Backdrop & Card
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.82)',
@@ -4591,9 +4632,9 @@ const detailStyles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.03)',
   },
   seasonOptionSelected: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    backgroundColor: 'rgba(229, 9, 20, 0.18)',
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.40)',
+    borderColor: '#E50914',
   },
   seasonOptionText: {
     fontWeight: '700',
@@ -4603,155 +4644,5 @@ const detailStyles = StyleSheet.create({
     color: '#a1a1aa',
     fontSize: moderateScale(11),
     fontWeight: '500',
-  },
-  downloadModalCard: {
-    width: '92%',
-    maxWidth: scale(380),
-    backgroundColor: '#18181b',
-    borderRadius: scale(16),
-    padding: scale(16),
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  downloadModalSubtitle: {
-    fontSize: moderateScale(11.5),
-    color: '#94a3b8',
-    marginTop: verticalScale(2),
-  },
-  modalCloseBtn: {
-    width: scale(32),
-    height: scale(32),
-    borderRadius: scale(16),
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  downloadLoadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: verticalScale(30),
-    paddingHorizontal: scale(16),
-  },
-  downloadLoadingText: {
-    color: '#cbd5e1',
-    fontSize: moderateScale(12.5),
-    textAlign: 'center',
-    marginTop: verticalScale(12),
-    lineHeight: moderateScale(18),
-  },
-  qualityDownloadCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderRadius: scale(12),
-    padding: scale(12),
-    marginBottom: verticalScale(10),
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  qualityDownloadInfo: {
-    flex: 1,
-    marginRight: scale(10),
-  },
-  qualityTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: scale(8),
-  },
-  qualityDownloadTitle: {
-    fontSize: moderateScale(13.5),
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  sizePill: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    paddingHorizontal: scale(7),
-    paddingVertical: verticalScale(2),
-    borderRadius: scale(6),
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-  },
-  sizePillText: {
-    fontSize: moderateScale(10.5),
-    fontWeight: '800',
-    color: '#38bdf8',
-  },
-  modalProgressContainer: {
-    marginTop: verticalScale(8),
-  },
-  modalProgressBarBg: {
-    height: verticalScale(4),
-    backgroundColor: '#27272a',
-    borderRadius: scale(2),
-    overflow: 'hidden',
-  },
-  modalProgressBarFill: {
-    height: '100%',
-    borderRadius: scale(2),
-  },
-  modalProgressTextRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: verticalScale(4),
-  },
-  modalProgressPct: {
-    fontSize: moderateScale(10.5),
-    fontWeight: '700',
-    color: '#38bdf8',
-  },
-  modalProgressBytes: {
-    fontSize: moderateScale(10),
-    color: '#94a3b8',
-  },
-  qualityDownloadActions: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  completedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(34, 197, 94, 0.12)',
-    paddingHorizontal: scale(10),
-    paddingVertical: verticalScale(6),
-    borderRadius: scale(14),
-    gap: scale(4),
-    borderWidth: 1,
-    borderColor: 'rgba(34, 197, 94, 0.3)',
-  },
-  completedBadgeText: {
-    fontSize: moderateScale(11),
-    fontWeight: '700',
-    color: '#22c55e',
-  },
-  modalControlBtn: {
-    width: scale(36),
-    height: scale(36),
-    borderRadius: scale(18),
-    backgroundColor: '#27272a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalResumeBtn: {
-    backgroundColor: '#0284c7',
-  },
-  modalStartDownloadBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: scale(13),
-    paddingVertical: verticalScale(7),
-    borderRadius: scale(16),
-    gap: scale(5),
-  },
-  modalStartDownloadText: {
-    fontSize: moderateScale(12),
-    fontWeight: '700',
-    color: '#09090b',
   },
 });
