@@ -6,7 +6,9 @@ import {
   calculateTitleMatchScore, 
   findBestMatch, 
   cleanTitleKeywords, 
-  normalizeString 
+  normalizeString,
+  getAudioTier,
+  getAudioRichnessScore
 } from './ScraperEngine.js';
 
 import { TamilDhool } from '../providers/tamildhool/index.js';
@@ -214,7 +216,30 @@ class ExtensionManagerService {
       }
     }
 
-    allMatches.sort((a, b) => b.matchScore - a.matchScore);
+    allMatches.sort((a, b) => {
+      const aAudio = getAudioRichnessScore(a.match?.title || '');
+      const bAudio = getAudioRichnessScore(b.match?.title || '');
+      const aTier = getAudioTier(a.match?.title || '');
+      const bTier = getAudioTier(b.match?.title || '');
+
+      // Server 3 (Movies4u): Strictly look for Multi Audio or Indian languages (Hindi, Tamil, Telugu, English, Malayalam, Kannada),
+      // fallback to Dual Audio (e.g. Hindi English), fallback to single audio English or any other languages.
+      if (activeProvider === 'movies4u') {
+        if (aTier !== bTier) {
+          return aTier - bTier; // Tier 1 < Tier 2 < Tier 3
+        }
+        if (aAudio !== bAudio) {
+          return bAudio - aAudio;
+        }
+        return b.matchScore - a.matchScore;
+      }
+
+      // Default providers (HDHub4u, 4KHDHub): Audio richness priority when match scores are close
+      if (Math.abs(a.matchScore - b.matchScore) < 0.25 && aAudio !== bAudio) {
+        return bAudio - aAudio;
+      }
+      return b.matchScore - a.matchScore;
+    });
 
     // Strict Server 1 (HDHub4u) & Server 2 (4KHDHub) rule: If both WEB-DL and WEBRip are available, consider ONLY WEB-DL
     if (activeProvider === 'hdhub4u' || activeProvider === '4khdhub') {

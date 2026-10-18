@@ -101,8 +101,116 @@ function extractSeasonNumbers(str) {
 }
 
 /**
+ * Detects the Audio Tier of a title or bridge label:
+ * - Tier 1: Multi Audio OR releases containing Indian languages
+ *   (Hindi, Tamil, Telugu, English, Malayalam, Kannada) or 3+ languages
+ * - Tier 2: Dual Audio (e.g. Hindi English, Dual Audio)
+ * - Tier 3: Single Audio English, other single language, or fallback
+ */
+export function getAudioTier(text) {
+  const t = (text || '').toLowerCase();
+  
+  const hasMultiKeyword = t.includes('multi audio') || 
+                           t.includes('multi-audio') || 
+                           t.includes('multiaudio') || 
+                           /\bmulti\b/i.test(t) ||
+                           t.includes('org multi');
+
+  const languages = [
+    'hindi', 'tamil', 'telugu', 'english', 'malayalam', 'kannada'
+  ];
+  const matchedLangs = languages.filter(l => {
+    const regex = new RegExp(`\\b${l}\\b|${l}-|-${l}`, 'i');
+    return regex.test(t);
+  });
+
+  const otherLangs = ['bengali', 'marathi', 'punjabi', 'gujarati', 'urdu', 'odia', 'bhojpuri', 'korean', 'japanese', 'spanish', 'french'];
+  const matchedOther = otherLangs.filter(l => new RegExp(`\\b${l}\\b`, 'i').test(t));
+  const totalLangCount = matchedLangs.length + matchedOther.length;
+
+  const hasDualKeyword = t.includes('dual audio') || 
+                          t.includes('dual-audio') || 
+                          t.includes('dualaudio') || 
+                          /\bdual\b/i.test(t);
+
+  const isDualHindiEnglish = (
+    (/\bhindi\b/i.test(t) && (/\beng(?:lish)?\b/i.test(t))) ||
+    /\b(?:hin|hindi)[-_\s+]+(?:eng|english)\b/i.test(t) ||
+    /\b(?:eng|english)[-_\s+]+(?:hin|hindi)\b/i.test(t)
+  );
+
+  const hasRegionalSouth = ['tamil', 'telugu', 'malayalam', 'kannada'].some(l => t.includes(l));
+
+  // Tier 1: Multi Audio or combinations with South Indian / Indian regional languages
+  if (
+    hasMultiKeyword || 
+    totalLangCount >= 3 || 
+    (hasRegionalSouth && (t.includes('hindi') || t.includes('english') || matchedLangs.length >= 2)) ||
+    matchedLangs.length >= 3
+  ) {
+    return 1;
+  }
+
+  // Tier 2: Dual Audio (e.g. Hindi English)
+  if (hasDualKeyword || (isDualHindiEnglish && totalLangCount === 2) || (totalLangCount === 2 && !hasRegionalSouth)) {
+    return 2;
+  }
+
+  // South Indian regional single language release
+  if (hasRegionalSouth) {
+    return 1;
+  }
+
+  // Tier 3: Single audio English or other languages
+  return 3;
+}
+
+export function getAudioRichnessScore(text) {
+  const t = (text || '').toLowerCase();
+  const tier = getAudioTier(t);
+
+  const languages = [
+    'hindi', 'tamil', 'telugu', 'english', 'malayalam', 'kannada'
+  ];
+  let langCount = 0;
+  for (const lang of languages) {
+    if (t.includes(lang)) langCount++;
+  }
+  const southLangs = ['tamil', 'telugu', 'malayalam', 'kannada'];
+  const southCount = southLangs.filter(l => t.includes(l)).length;
+
+  if (tier === 1) {
+    let score = 10000;
+    if (t.includes('multi audio') || t.includes('multi-audio') || /\bmulti\b/i.test(t)) {
+      score += 2000;
+    }
+    score += (langCount * 500);
+    score += (southCount * 600);
+    return score;
+  }
+
+  if (tier === 2) {
+    let score = 5000;
+    if (t.includes('dual audio') || t.includes('dual-audio') || /\bdual\b/i.test(t)) {
+      score += 1000;
+    }
+    score += (langCount * 200);
+    return score;
+  }
+
+  // Tier 3: Single audio
+  if (t.includes('english') || /\beng\b/i.test(t)) {
+    return 2000;
+  }
+  if (t.includes('hindi') || /\bhin\b/i.test(t)) {
+    return 1500;
+  }
+  return 1000;
+}
+
+/**
  * Intelligent Media & Title Matching Scorer
- * Evaluates Token overlap, Candidate coverage, Release Year, Media Type (Movie vs TV Series), and TV Season Number
+ * Evaluates Token overlap, Candidate coverage, Release Year, Media Type (Movie vs TV Series), TV Season Number, and Multi-Audio
  */
 function calculateTitleMatchScore(
   targetTitle, 
@@ -120,6 +228,13 @@ function calculateTitleMatchScore(
   const cleanCandidate = normalizeNumbers(cleanTitleKeywords(candidateTitle));
 
   if (!normTarget || !normCandidate) return 0.0;
+
+  // Audio richness priority (Multi-Audio with Tamil, Telugu, Hindi, English prioritized over Dual Audio)
+  const audioScore = getAudioRichnessScore(candidateTitle);
+  let audioMultiplier = 1.0;
+  if (audioScore >= 3000) audioMultiplier = 1.25;
+  else if (audioScore >= 1500) audioMultiplier = 1.15;
+  else if (audioScore >= 500) audioMultiplier = 1.08;
 
   // Media Type check (Strict penalty if user wanted movie but candidate is series, or vice versa)
   const isTargetSeries = targetType === 'tv' || targetType === 'series';
@@ -151,7 +266,7 @@ function calculateTitleMatchScore(
 
   // 1. Exact string match (strong bonus so exact titles decisively beat partials)
   if (normTarget === normCandidate || cleanTarget === cleanCandidate) {
-    return 2.0 * typeMultiplier * seasonMultiplier;
+    return 2.0 * typeMultiplier * seasonMultiplier * audioMultiplier;
   }
 
   const targetTokens = cleanTarget.split(' ').filter(t => t.length > 0);
@@ -212,7 +327,7 @@ function calculateTitleMatchScore(
     (filteredCandidateTokens.length >= targetTokens.length && targetTokens.every((t, i) => t === filteredCandidateTokens[i]));
 
   if (targetRecall === 1.0 && isTargetPrefix && yearMultiplier >= 1.0) {
-    return Math.min(1.7, (1.2 + candidatePrecision * 0.4) * typeMultiplier * seasonMultiplier);
+    return Math.min(1.85, (1.2 + candidatePrecision * 0.4) * typeMultiplier * seasonMultiplier * audioMultiplier);
   }
 
   // Severe penalty for single-word targets (like "From") when candidate has extra non-meta words ("The Girl From Plainville", "Agent from Above")
@@ -225,8 +340,8 @@ function calculateTitleMatchScore(
   if (!isTargetPrefix && targetTokens.length <= 2) {
     baseScore *= 0.4; // Strong penalty if target word appears in the middle of an unrelated title
   }
-  // Cap partial matches at 0.95 so exact/core matches (>1.0) always take priority
-  return Math.min(0.95, baseScore * yearMultiplier * typeMultiplier * seasonMultiplier);
+  // Cap partial matches at 0.98 so exact/core matches (>1.0) always take priority
+  return Math.min(0.98, baseScore * yearMultiplier * typeMultiplier * seasonMultiplier * audioMultiplier);
 }
 
 /**
@@ -1383,7 +1498,8 @@ function parseMediaBridges(html, pageTitle = '') {
     const resScore = quality === '4k' ? 500 : (quality === '1080p' ? 250 : (quality === '720p' ? 100 : 50));
     const tagScore = matchedTags.length * 25 + (highExtMatches > 0 ? 50 : 0);
     const sizeScore = Math.min(150, Math.round(sizeMB / 100));
-    const totalScore = resScore + tagScore + sizeScore;
+    const audioScore = getAudioRichnessScore(combined);
+    const totalScore = resScore + tagScore + sizeScore + audioScore;
 
     const bridgeObj = {
       seasonNumber: seasonNum,
@@ -2820,6 +2936,8 @@ export {
   normalizeString,
   cleanTitleKeywords,
   parseMediaBridges,
+  getAudioTier,
+  getAudioRichnessScore,
   getStreamPriority as getPriority,
   selectBestStreamCandidate as selectBestCandidate
 };
