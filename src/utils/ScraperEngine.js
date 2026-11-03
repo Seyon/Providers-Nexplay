@@ -1633,14 +1633,12 @@ export function defaultSizeForQuality(q) {
 
 var HDHub4uClient = class {
   constructor() {
-    this.baseUrl = "https://new3.hdhub4u.free";
+    this.baseUrl = "https://new10.hdhub4u.cl";
     this.mirrors = [
-      "https://new3.hdhub4u.free",
-      "https://new2.hdhub4u.free",
-      "https://hdhub4u.bi",
-      "https://hdhub4u.ms",
-      "https://hdhub4u.pro",
-      "https://hdhub4u.tv"
+      "https://new10.hdhub4u.cl",
+      "https://vfilm.pro",
+      "https://hdhub4u.skin",
+      "https://hdhub4u.pro"
     ];
   }
 

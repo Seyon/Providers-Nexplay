@@ -1,4 +1,5 @@
 import { Movies4u } from './Movies4uProvider.js';
+import { Net79 } from '../providers/net79/index.js';
 import { 
   HDHub4u, 
   FourKHDHub, 
@@ -55,7 +56,8 @@ class ExtensionManagerService {
     console.log(`[ExtensionManager] Native search: "${searchQuery}" on ${provider}`);
     try {
       let engine;
-      if (provider === 'tamildhool' || provider === '6') engine = TamilDhool;
+      if (provider === 'net79' || provider === '0') engine = Net79;
+      else if (provider === 'tamildhool' || provider === '6') engine = TamilDhool;
       else if (provider === 'tamilgun' || provider === '7') engine = TamilGun;
       else if (provider === 'movies4u' || provider === '3') engine = Movies4u;
       else if (provider === '4khdhub' || provider === '2') engine = FourKHDHub;
@@ -281,7 +283,8 @@ class ExtensionManagerService {
   async getMeta(provider, link, targetSeason = 1) {
     console.log(`[ExtensionManager] Native extract details: ${link} (Season ${targetSeason})`);
     let engine;
-    if (link.includes('tamildhool') || provider === 'tamildhool' || provider === '6') engine = TamilDhool;
+    if (link.includes('net79') || link.includes('watch-tmdb') || provider === 'net79' || provider === '0') engine = Net79;
+    else if (link.includes('tamildhool') || provider === 'tamildhool' || provider === '6') engine = TamilDhool;
     else if (link.includes('tamilgun') || link.includes('arivumani') || provider === 'tamilgun' || provider === '7') engine = TamilGun;
     else if (link.includes('movies4u') || provider === 'movies4u' || provider === '3') engine = Movies4u;
     else if (link.includes('hdhub4u') || provider === 'hdhub4u' || provider === '1') engine = HDHub4u;
@@ -305,7 +308,8 @@ class ExtensionManagerService {
    */
   async getPlayableStream(provider, link, isTVShow = false, episodeNumber = 1, seasonNumber = 1) {
     let engine;
-    if (link.includes('tamildhool') || provider === 'tamildhool' || provider === '6') engine = TamilDhool;
+    if (link.includes('net79') || link.includes('watch-tmdb') || provider === 'net79' || provider === '0') engine = Net79;
+    else if (link.includes('tamildhool') || provider === 'tamildhool' || provider === '6') engine = TamilDhool;
     else if (link.includes('tamilgun') || link.includes('arivumani') || provider === 'tamilgun' || provider === '7') engine = TamilGun;
     else if (link.includes('movies4u') || provider === 'movies4u' || provider === '3') engine = Movies4u;
     else if (link.includes('4khdhub') || provider === '4khdhub' || provider === '2') engine = FourKHDHub;
