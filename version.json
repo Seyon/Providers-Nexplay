@@ -1,15 +1,23 @@
 {
   "major": 1,
   "minor": 8,
-  "patch": 32,
+  "patch": 33,
   "issue": 0,
-  "build": 185,
+  "build": 186,
   "updateType": "patch",
   "timestamp": "20261103",
-  "versionName": "1.8.32.0.185-patch.20261103",
-  "versionCode": 2120185,
-  "lastSuccessfulBuild": "2026-11-04T04:01:24.150Z",
+  "versionName": "1.8.33.0.186-patch.20261103",
+  "versionCode": 2130186,
+  "lastSuccessfulBuild": "2026-11-04T04:28:44.729Z",
   "history": [
+    {
+      "versionName": "1.8.33.0.186-patch.20261103",
+      "versionCode": 2130186,
+      "updateType": "patch",
+      "build": 186,
+      "note": "Fix VLC playback options: remove tcp timeout, expand watchdog to 35s, add key prop and stable buffer",
+      "builtAt": "2026-11-04T04:28:44.729Z"
+    },
     {
       "versionName": "1.8.32.0.185-patch.20261103",
       "versionCode": 2120185,
@@ -401,14 +409,6 @@
       "build": 137,
       "note": "TMDB API Key prompt, Donation modal & Account Key Management",
       "builtAt": "2026-09-28T17:21:17.751Z"
-    },
-    {
-      "versionName": "1.7.11.0.136-patch.20260927",
-      "versionCode": 1810136,
-      "updateType": "patch",
-      "build": 136,
-      "note": "Debug build with seek diagnostics",
-      "builtAt": "2026-09-27T16:27:57.519Z"
     }
   ]
 }
