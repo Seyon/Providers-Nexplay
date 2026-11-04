@@ -43,6 +43,7 @@ import {
   getWriters
 } from '../utils/api';
 import { ExtensionManager } from '../utils/ExtensionManager';
+import nexPlayAnimeApi from '../services/NexPlayAnimeApi';
 import { saveWatchProgress, getUniversalQuality, subscribeSettings } from '../utils/AppSettings';
 import {
   getPlaybackProgress,
@@ -236,10 +237,13 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const [loadingDetails, setLoadingDetails] = useState(true);
 
   // Determine if TV Show (Strictly check media_type and prevent movie titles from false-positive series detection)
-  const isTVShow = (movie?.media_type === 'tv' || details?.media_type === 'tv') ? true :
-                   (movie?.media_type === 'movie' || details?.media_type === 'movie') ? false :
-                   (Boolean(movie?.number_of_seasons || details?.number_of_seasons) && !movie?.title && !details?.title) ||
-                   (Boolean(movie?.first_air_date || details?.first_air_date) && !movie?.release_date && !details?.release_date && !movie?.title && !details?.title);
+  const isAnimeContent = Boolean(movie?.isAnime || movie?.media_type === 'anime' || String(movie?.id).startsWith('np_anime_'));
+  const isTVShow = isAnimeContent
+    ? ((movie?.type || details?.type) !== 'Movie')
+    : ((movie?.media_type === 'tv' || details?.media_type === 'tv') ? true :
+       (movie?.media_type === 'movie' || details?.media_type === 'movie') ? false :
+       (Boolean(movie?.number_of_seasons || details?.number_of_seasons) && !movie?.title && !details?.title) ||
+       (Boolean(movie?.first_air_date || details?.first_air_date) && !movie?.release_date && !details?.release_date && !movie?.title && !details?.title));
 
   const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
@@ -263,7 +267,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
 
   // Player & Scraper State
-  const [activeServer, setActiveServer] = useState(3); // Default to Server 3 (Movies4u / Pixeldrain primary)
+  const [activeServer, setActiveServer] = useState(1); // Default to Server 1 (HDHub4u primary)
   const lastPlayedServerRef = useRef(3);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
@@ -729,11 +733,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     }, 3500);
   };
 
-  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u)
+  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u), Server 4 (Net79)
   const servers = [
     { id: 1, label: 'Server 1', short: 'Server 1', desc: 'HDHub4u Direct Stream' },
     { id: 2, label: 'Server 2', short: 'Server 2', desc: '4KHDHub Ultra & HD Stream' },
     { id: 3, label: 'Server 3', short: 'Server 3', desc: 'Movies4u Direct Stream' },
+    { id: 4, label: 'Server 4', short: 'Server 4', desc: 'Net79 Direct Stream' },
   ];
 
   // Current selected episode / media item
@@ -801,6 +806,83 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     async function loadMediaData() {
       setLoadingDetails(true);
       try {
+        if (isAnimeContent) {
+          const animeRes = await nexPlayAnimeApi.getAnimeById(movie.id);
+          if (!isMounted) return;
+          if (animeRes?.success && animeRes.data) {
+            const animeData = animeRes.data;
+            setDetails(animeData);
+
+            if (isTVShow) {
+              const totalEps = animeData.episodes || animeData.number_of_episodes || 12;
+              const animeSeasons = [{
+                id: 1,
+                name: 'Season 1',
+                season_number: 1,
+                episode_count: totalEps
+              }];
+              setSeasons(animeSeasons);
+              setSelectedSeason(1);
+              selectedSeasonRef.current = 1;
+
+              const epRes = await nexPlayAnimeApi.getAnimeEpisodes(movie.id);
+              if (!isMounted) return;
+              if (epRes?.success && Array.isArray(epRes.data) && epRes.data.length > 0) {
+                const formattedEps = epRes.data.map(ep => ({
+                  id: ep.id || `ep-s1-e${ep.episode_number}`,
+                  seasonNumber: 1,
+                  episodeNumber: ep.episode_number,
+                  title: `${ep.episode_number}. ${ep.title || `Episode ${ep.episode_number}`}`,
+                  name: ep.title || `Episode ${ep.episode_number}`,
+                  overview: ep.synopsis,
+                  duration: animeData.duration || '24m',
+                  image: ep.image || animeData.backdrop_path || animeData.poster_path,
+                  videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+                }));
+                setEpisodesList(formattedEps);
+
+                const latestSeriesRecord = getLatestSeriesProgress(movie.id);
+                const targetEpisode = Number(movie.episode || latestSeriesRecord?.episode) || 1;
+                const match = formattedEps.find(e => Number(e.episodeNumber) === targetEpisode) || formattedEps[0];
+                setCurrentEpisode(match);
+                currentEpisodeRef.current = match;
+              }
+            } else {
+              // Anime Feature Film
+              const initialEp = {
+                id: `movie-${movie.id}`,
+                title: animeData.title || movie.title || 'Anime Movie',
+                episodeNumber: 1,
+                duration: animeData.duration || '1h 50m',
+                image: animeData.backdrop_path || animeData.poster_path,
+                videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+              };
+              setCurrentEpisode(initialEp);
+              currentEpisodeRef.current = initialEp;
+            }
+
+            // Relations & Recommendations
+            const relRes = await nexPlayAnimeApi.getAnimeRelations(movie.id);
+            if (!isMounted) return;
+            if (relRes?.success && Array.isArray(relRes.data) && relRes.data.length > 0) {
+              const recs = relRes.data.map(r => ({
+                id: r.related_anime_id || `np_anime_${r.related_mal_id}`,
+                title: r.related_title,
+                name: r.related_title,
+                poster_path: r.related_image,
+                image: r.related_image,
+                media_type: 'anime',
+                isAnime: true,
+                genre: r.relation_type,
+                vote_average: 8.0,
+                quality: 'HD'
+              }));
+              setRecommendations(recs);
+            }
+          }
+          return;
+        }
+
         const fullDetails = await fetchMediaDetails(movie.id, isTVShow ? 'tv' : 'movie');
         if (!isMounted) return;
 
@@ -981,19 +1063,21 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const vlcSource = useMemo(() => {
     if (!currentSourceUri) return undefined;
     const mediaOptions = [
-      ':network-caching=1000',
-      ':file-caching=1000',
-      ':live-caching=1000',
+      ':network-caching=300',
+      ':file-caching=300',
+      ':live-caching=300',
       ':http-reconnect=true',
-      ':clock-jitter=0',
-      ':clock-synchro=0',
-      ':drop-late-frames',
-      ':skip-frames',
+      ':http-continuous=1',
       ':no-sub-autodetect-file',
       ':no-stats'
     ];
 
-    const initOptions = [];
+    const initOptions = [
+      '--network-caching=300',
+      '--ipv4-timeout=2500',
+      '--tcp-timeout=2500',
+      '--no-stats'
+    ];
 
     const ref = currentSourceHeaders?.Referer || currentSourceHeaders?.referer || '';
     if (ref) {
@@ -1009,7 +1093,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       uri: currentSourceUri,
       isNetwork: true,
       autoplay: true,
-      hwDecoderEnabled: VLCHardwareDecoder?.Full ?? 2,
+      hwDecoderEnabled: VLCHardwareDecoder?.Automatic ?? -1,
       mediaOptions,
       initOptions
     };
@@ -1223,9 +1307,13 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       // Server 1: strictly hdhub4u
       // Server 2: strictly 4khdhub
       // Server 3: strictly movies4u
+      // Server 4: strictly net79
       let providerValue = 'hdhub4u';
       let providerLabel = 'Server 1 (HDHub4u)';
-      if (server === 3) {
+      if (server === 4) {
+        providerValue = 'net79';
+        providerLabel = 'Server 4 (Net79)';
+      } else if (server === 3) {
         providerValue = 'movies4u';
         providerLabel = 'Server 3 (Movies4u)';
       } else if (server === 2) {
@@ -1336,6 +1424,15 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       setControlsVisible(true);
       resetControlsTimeout();
 
+      // If provider exposes multi-language audio dubs (e.g. Net79 / OTT providers), register them in audio selector
+      if (Array.isArray(playable?.audioTracks) && playable.audioTracks.length > 0) {
+        setAvailableAudioTracks(playable.audioTracks);
+        availableAudioTracksRef.current = playable.audioTracks;
+        const activeTrack = playable.audioTracks.find(t => t.isOriginal) || playable.audioTracks[0];
+        setSelectedAudioTrack(activeTrack);
+        selectedAudioTrackRef.current = activeTrack;
+      }
+
       if (requestId === activeScrapeRequestId.current && isMounted.current) {
         try {
           const safeInitialLink = sanitizePlayableUrl(initialStreamLink);
@@ -1438,13 +1535,42 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     resetControlsTimeout();
   };
 
-  // Safe Audio Track Switcher (Direct VLC Track selection)
-  const switchAudioTrack = (track) => {
+  // Safe Audio Track Switcher (Direct VLC Track selection or OTT multi-stream dub swap)
+  const switchAudioTrack = async (track) => {
     if (!track) return;
     hasUserManuallySelectedAudioTrack.current = true;
     setSelectedAudioTrack(track);
     selectedAudioTrackRef.current = track;
     try {
+      if (track.isProviderDub || track.subjectId) {
+        console.log('[MovieDetailScreen] Switching audio dub stream to:', track.displayLabel || track.name);
+        closePlayerMenu();
+        setIsBuffering(true);
+        isBufferingRef.current = true;
+
+        const effectiveMediaId = detailsRef.current?.id || movieRef.current?.id;
+        const isTV = isTVShowRef.current;
+        const epNum = currentEpisodeRef.current?.episodeNumber || 1;
+        const sNum = currentEpisodeRef.current?.seasonNumber || 1;
+
+        const newPlayable = await ExtensionManager.getPlayableStream(
+          activeServer || 'net79',
+          String(effectiveMediaId),
+          isTV,
+          epNum,
+          sNum,
+          track.langCode
+        );
+
+        if (newPlayable?.streamUrl) {
+          playResolvedLink(newPlayable.streamUrl, currentQuality);
+        } else {
+          setIsBuffering(false);
+          isBufferingRef.current = false;
+        }
+        return;
+      }
+
       const tId = typeof track.trackId === 'number'
         ? track.trackId
         : (typeof track.id === 'number' ? track.id : parseInt(track.id, 10));
@@ -1454,6 +1580,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       }
     } catch (e) {
       console.warn("[MovieDetailScreen] Error setting audioTrack:", e);
+      setIsBuffering(false);
+      isBufferingRef.current = false;
     }
     closePlayerMenu();
   };
@@ -2264,7 +2392,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                 try { audioList = JSON.parse(tracks.audio); } catch (_) {}
               }
 
-              if (audioList.length > 0) {
+              const hasProviderDubs = availableAudioTracksRef.current.some(t => t.isProviderDub);
+              if (audioList.length <= 1 && hasProviderDubs) {
+                console.log('[VLCPlayer] Preserving multi-language provider dubs for single-track stream');
+              } else if (audioList.length > 0) {
                 const formatted = audioList.map((t, idx) => ({
                   id: String(t.id),
                   trackId: t.id,
