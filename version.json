@@ -1,15 +1,23 @@
 {
   "major": 1,
   "minor": 8,
-  "patch": 31,
+  "patch": 32,
   "issue": 0,
-  "build": 184,
+  "build": 185,
   "updateType": "patch",
   "timestamp": "20261103",
-  "versionName": "1.8.31.0.184-patch.20261103",
-  "versionCode": 2110184,
-  "lastSuccessfulBuild": "2026-11-03T19:02:40.106Z",
+  "versionName": "1.8.32.0.185-patch.20261103",
+  "versionCode": 2120185,
+  "lastSuccessfulBuild": "2026-11-04T04:01:24.150Z",
   "history": [
+    {
+      "versionName": "1.8.32.0.185-patch.20261103",
+      "versionCode": 2120185,
+      "updateType": "patch",
+      "build": 185,
+      "note": "Add Server 4 Net79 button, Server 1-4 routing, fix Pingora Typesense search",
+      "builtAt": "2026-11-04T04:01:24.150Z"
+    },
     {
       "versionName": "1.8.31.0.184-patch.20261103",
       "versionCode": 2110184,
@@ -401,14 +409,6 @@
       "build": 136,
       "note": "Debug build with seek diagnostics",
       "builtAt": "2026-09-27T16:27:57.519Z"
-    },
-    {
-      "versionName": "1.7.10.0.135-patch.20260927",
-      "versionCode": 1800135,
-      "updateType": "patch",
-      "build": 135,
-      "note": "Debug build with seek diagnostics",
-      "builtAt": "2026-09-27T16:17:21.953Z"
     }
   ]
 }
