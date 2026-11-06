@@ -267,8 +267,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
 
   // Player & Scraper State
-  const [activeServer, setActiveServer] = useState(1); // Default to Server 1 (HDHub4u primary)
-  const lastPlayedServerRef = useRef(3);
+  const [activeServer, setActiveServer] = useState(isAnimeContent ? 4 : 1); // Default to Server 4 for Anime, Server 1 for Movies
+  const lastPlayedServerRef = useRef(isAnimeContent ? 4 : 3);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
   const [hasFirstFrameRendered, setHasFirstFrameRendered] = useState(false);
@@ -733,12 +733,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     }, 3500);
   };
 
-  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u), Server 4 (Net79)
+  // Strict Individual Servers: Server 1 (HDHub4u), Server 2 (4KHDHub), Server 3 (Movies4u), Server 4 (AnimeSalt.cx Anime)
   const servers = [
     { id: 1, label: 'Server 1', short: 'Server 1', desc: 'HDHub4u Direct Stream' },
     { id: 2, label: 'Server 2', short: 'Server 2', desc: '4KHDHub Ultra & HD Stream' },
     { id: 3, label: 'Server 3', short: 'Server 3', desc: 'Movies4u Direct Stream' },
-    { id: 4, label: 'Server 4', short: 'Server 4', desc: 'Net79 Direct Stream' },
+    { id: 4, label: 'Server 4', short: 'Server 4', desc: 'AnimeSalt.cx (Anime Series & Movies)' },
   ];
 
   // Current selected episode / media item
@@ -812,6 +812,8 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
           if (animeRes?.success && animeRes.data) {
             const animeData = animeRes.data;
             setDetails(animeData);
+            setActiveServer(4);
+            lastPlayedServerRef.current = 4;
 
             if (isTVShow) {
               const totalEps = animeData.episodes || animeData.number_of_episodes || 12;
@@ -1063,14 +1065,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   const vlcSource = useMemo(() => {
     if (!currentSourceUri) return undefined;
     const mediaOptions = [
+      ':sub-track=-1',
+      ':no-sub',
       ':network-caching=2000',
       ':file-caching=2000',
       ':live-caching=2000',
       ':http-reconnect=true',
-      ':clock-jitter=0',
-      ':clock-synchro=0',
-      ':drop-late-frames',
-      ':skip-frames',
       ':no-sub-autodetect-file',
       ':no-stats'
     ];
@@ -1147,6 +1147,15 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     },
     get muted() {
       return isMutedRef.current;
+    },
+    get volume() {
+      return volumeLevelRef.current;
+    },
+    set volume(val) {
+      const v = Math.max(0, Math.min(1, Number(val) || 0));
+      const rounded = Math.round(v * 100) / 100;
+      volumeLevelRef.current = rounded;
+      setVolumeLevel(rounded);
     },
     set playbackRate(rate) {
       setPlaybackSpeed(rate);
@@ -1305,12 +1314,24 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       // Server 1: strictly hdhub4u
       // Server 2: strictly 4khdhub
       // Server 3: strictly movies4u
-      // Server 4: strictly net79
+      // Server 4: strictly animesalt (Dedicated to Anime Series & Movies Only)
       let providerValue = 'hdhub4u';
       let providerLabel = 'Server 1 (HDHub4u)';
       if (server === 4) {
-        providerValue = 'net79';
-        providerLabel = 'Server 4 (Net79)';
+        if (!isAnimeContent) {
+          console.warn('[MovieDetailScreen] Server 4 is dedicated to Anime series and movies only.');
+          setIsResolvingPlayable(false);
+          isResolvingRef.current = false;
+          setResolvingStatus('');
+          setPlaybackError({
+            title: 'Anime Dedicated Server',
+            message: 'Server 4 (AnimeSalt.cx) is dedicated to Anime series and movies only. Please select Server 1, Server 2, or Server 3 for Hollywood and Bollywood titles.',
+            server: 4
+          });
+          return;
+        }
+        providerValue = 'animesalt';
+        providerLabel = 'Server 4 (AnimeSalt.cx)';
       } else if (server === 3) {
         providerValue = 'movies4u';
         providerLabel = 'Server 3 (Movies4u)';
@@ -1422,7 +1443,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       setControlsVisible(true);
       resetControlsTimeout();
 
-      // If provider exposes multi-language audio dubs (e.g. Net79 / OTT providers), register them in audio selector
+      // If provider exposes multi-language audio dubs (e.g. AnimeSalt / OTT providers), register them in audio selector
       if (Array.isArray(playable?.audioTracks) && playable.audioTracks.length > 0) {
         setAvailableAudioTracks(playable.audioTracks);
         availableAudioTracksRef.current = playable.audioTracks;
@@ -1552,7 +1573,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
         const sNum = currentEpisodeRef.current?.seasonNumber || 1;
 
         const newPlayable = await ExtensionManager.getPlayableStream(
-          activeServer || 'net79',
+          activeServer === 4 ? 'animesalt' : (activeServer || 'hdhub4u'),
           String(effectiveMediaId),
           isTV,
           epNum,
@@ -1879,7 +1900,18 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
   };
 
   const toggleContentFitMode = () => {
-    setContentFitMode(prev => prev === 'contain' ? 'cover' : 'contain');
+    setContentFitMode(prev => {
+      if (prev === 'contain') {
+        showAbrToast('Aspect Ratio: Zoom to Fill (Crop)');
+        return 'cover';
+      } else if (prev === 'cover') {
+        showAbrToast('Aspect Ratio: Stretch to Screen');
+        return 'stretch';
+      } else {
+        showAbrToast('Aspect Ratio: Provider Default (Best Fit)');
+        return 'contain';
+      }
+    });
   };
 
   const toggleScreenLock = () => {
@@ -1929,38 +1961,44 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
       },
       onPanResponderMove: (evt, gestureState) => {
         if (isControlsLockedRef.current) return;
-        if (Math.abs(gestureState.dy) > 8) {
+        if (Math.abs(gestureState.dy) > 4) {
           isDragging.current = true;
           const currentW = playerLayoutRef.current.width || windowWidth;
           const currentH = playerLayoutRef.current.height || (windowWidth * 9) / 16;
           const isLeft = startTouchX.current < currentW / 2;
 
           // Dragging up (negative dy) increases value; dragging down (positive dy) decreases
-          // Calibrated to smooth 280px range so every single movement changes value smoothly
-          const delta = -gestureState.dy / Math.max(280, currentH * 0.85);
+          // Precise 1% increments calibrated to screen height
+          const delta = -gestureState.dy / Math.max(260, currentH * 0.85);
 
           if (isLeft) {
-            // Brightness control (range 0.01 to 0.99)
-            const nextBrightness = Math.max(0.01, Math.min(0.99, initialGestureVal.current + delta));
-            brightnessRef.current = nextBrightness;
-            setBrightness(nextBrightness);
-            try {
-              Brightness.setBrightnessAsync(nextBrightness);
-            } catch (e) {}
+            // Brightness control (range 0.01 to 1.00)
+            const nextBrightness = Math.max(0.01, Math.min(1.0, initialGestureVal.current + delta));
+            const roundedBri = Math.round(nextBrightness * 100) / 100;
+            if (Math.abs(roundedBri - brightnessRef.current) >= 0.01) {
+              brightnessRef.current = roundedBri;
+              setBrightness(roundedBri);
+              try {
+                Brightness.setBrightnessAsync(roundedBri);
+              } catch (e) {}
+            }
             showGesturePill('brightness');
           } else {
-            // Volume control (range 0.0 to 1.0)
+            // Volume control (range 0.00 to 1.00)
             const nextVolume = Math.max(0.0, Math.min(1.0, initialGestureVal.current + delta));
-            volumeLevelRef.current = nextVolume;
-            setVolumeLevel(nextVolume);
-            if (player) {
-              try {
-                player.volume = nextVolume;
-                if (nextVolume > 0 && isMuted) {
-                  setIsMuted(false);
-                  player.muted = false;
-                }
-              } catch (e) {}
+            const roundedVol = Math.round(nextVolume * 100) / 100;
+            if (Math.abs(roundedVol - volumeLevelRef.current) >= 0.01) {
+              volumeLevelRef.current = roundedVol;
+              setVolumeLevel(roundedVol);
+              if (player) {
+                try {
+                  player.volume = roundedVol;
+                  if (roundedVol > 0 && isMuted) {
+                    setIsMuted(false);
+                    player.muted = false;
+                  }
+                } catch (e) {}
+              }
             }
             showGesturePill('volume');
           }
@@ -2251,8 +2289,10 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
             autoplay={true}
             paused={!isPlaying}
             muted={isMuted}
+            volume={isMuted ? 0 : Math.round(volumeLevel * 100)}
             rate={playbackSpeed || 1.0}
-            resizeMode={contentFitMode === 'cover' ? 'cover' : 'contain'}
+            resizeMode={contentFitMode}
+            autoAspectRatio={false}
             style={StyleSheet.absoluteFill}
             progressUpdateInterval={500}
             showNowPlaying={false}
@@ -2267,6 +2307,17 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
               isBufferingRef.current = false;
               if (event?.duration && event.duration > 0) {
                 setDuration(event.duration);
+              }
+              if (typeof event?.volume === 'number' && !isNaN(event.volume)) {
+                const v = Math.max(0, Math.min(1, event.volume));
+                const rounded = Math.round(v * 100) / 100;
+                setVolumeLevel(rounded);
+                volumeLevelRef.current = rounded;
+              }
+              if (!selectedSubtitleTrackRef.current) {
+                try {
+                  vlcPlayerRef.current?.selectSubtitleTrack(-1);
+                } catch (_) {}
               }
               if (isPlayingRef.current) {
                 try {
@@ -2439,6 +2490,21 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                   }));
                 setAvailableSubtitleTracks(formattedSubs);
                 availableSubtitleTracksRef.current = formattedSubs;
+
+                if (!selectedSubtitleTrackRef.current) {
+                  try {
+                    vlcPlayerRef.current?.selectSubtitleTrack(-1);
+                  } catch (_) {}
+                } else {
+                  try {
+                    const sId = typeof selectedSubtitleTrackRef.current.trackId === 'number'
+                      ? selectedSubtitleTrackRef.current.trackId
+                      : parseInt(selectedSubtitleTrackRef.current.id, 10);
+                    if (!isNaN(sId) && sId !== -1) {
+                      vlcPlayerRef.current?.selectSubtitleTrack(sId);
+                    }
+                  } catch (_) {}
+                }
               }
             }}
             onError={(err) => {
@@ -2549,68 +2615,72 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
           </Animated.View>
         )}
 
-        {/* Left Side Swipe: Brightness Indicator Overlay */}
+        {/* Left Side Swipe: Authentic VLC Brightness HUD Overlay */}
         {gestureIndicator === 'brightness' && (
           <Animated.View
             pointerEvents="none"
             style={{
               opacity: gestureIndicatorAnim,
               position: 'absolute',
-              left: isPortrait ? scale(28) : scale(60),
+              left: isPortrait ? scale(24) : scale(50),
               top: '50%',
-              marginTop: verticalScale(-55),
-              backgroundColor: 'rgba(10, 10, 15, 0.9)',
+              marginTop: verticalScale(-65),
+              backgroundColor: 'rgba(16, 16, 18, 0.85)',
               paddingHorizontal: scale(14),
-              paddingVertical: verticalScale(16),
-              borderRadius: scale(18),
+              paddingVertical: verticalScale(18),
+              borderRadius: scale(22),
               alignItems: 'center',
               borderWidth: 1,
-              borderColor: 'rgba(251, 191, 36, 0.45)',
+              borderColor: 'rgba(255, 255, 255, 0.15)',
               zIndex: 65,
-              shadowColor: '#fbbf24',
-              shadowOpacity: 0.35,
-              shadowRadius: 10
+              shadowColor: '#000000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.5,
+              shadowRadius: 10,
+              elevation: 10
             }}
           >
-            <Ionicons name={brightness > 0.5 ? "sunny" : "sunny-outline"} size={scale(24)} color="#fbbf24" />
-            <View style={{ width: scale(6), height: verticalScale(50), backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: scale(3), marginVertical: verticalScale(8), overflow: 'hidden', justifyContent: 'flex-end' }}>
-              <View style={{ width: '100%', height: `${Math.round(brightness * 100)}%`, backgroundColor: '#fbbf24', borderRadius: scale(3) }} />
+            <Ionicons name={brightness > 0.5 ? "sunny" : "sunny-outline"} size={scale(24)} color="#ffffff" />
+            <View style={{ width: scale(6), height: verticalScale(60), backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: scale(3), marginVertical: verticalScale(10), overflow: 'hidden', justifyContent: 'flex-end' }}>
+              <View style={{ width: '100%', height: `${Math.round(brightness * 100)}%`, backgroundColor: '#ffffff', borderRadius: scale(3) }} />
             </View>
-            <Text style={{ color: '#fbbf24', fontSize: moderateScale(11), fontWeight: '800' }}>
+            <Text style={{ color: '#ffffff', fontSize: moderateScale(11), fontWeight: '700', letterSpacing: 0.5 }}>
               {Math.round(brightness * 100)}%
             </Text>
           </Animated.View>
         )}
 
-        {/* Right Side Swipe: Volume Indicator Overlay */}
+        {/* Right Side Swipe: Authentic VLC Volume HUD Overlay */}
         {gestureIndicator === 'volume' && (
           <Animated.View
             pointerEvents="none"
             style={{
               opacity: gestureIndicatorAnim,
               position: 'absolute',
-              right: isPortrait ? scale(28) : scale(60),
+              right: isPortrait ? scale(24) : scale(50),
               top: '50%',
-              marginTop: verticalScale(-55),
-              backgroundColor: 'rgba(10, 10, 15, 0.9)',
+              marginTop: verticalScale(-65),
+              backgroundColor: 'rgba(16, 16, 18, 0.85)',
               paddingHorizontal: scale(14),
-              paddingVertical: verticalScale(16),
-              borderRadius: scale(18),
+              paddingVertical: verticalScale(18),
+              borderRadius: scale(22),
               alignItems: 'center',
               borderWidth: 1,
-              borderColor: 'rgba(229, 9, 20, 0.45)',
+              borderColor: 'rgba(255, 255, 255, 0.15)',
               zIndex: 65,
-              shadowColor: '#E50914',
-              shadowOpacity: 0.35,
-              shadowRadius: 10
+              shadowColor: '#000000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.5,
+              shadowRadius: 10,
+              elevation: 10
             }}
           >
-            <Ionicons name={volumeLevel === 0 ? "volume-mute" : (volumeLevel > 0.5 ? "volume-high" : "volume-low")} size={scale(24)} color="#E50914" />
-            <View style={{ width: scale(6), height: verticalScale(50), backgroundColor: 'rgba(255, 255, 255, 0.2)', borderRadius: scale(3), marginVertical: verticalScale(8), overflow: 'hidden', justifyContent: 'flex-end' }}>
-              <View style={{ width: '100%', height: `${Math.round(volumeLevel * 100)}%`, backgroundColor: '#E50914', borderRadius: scale(3) }} />
+            <Ionicons name={volumeLevel === 0 ? "volume-mute" : (volumeLevel > 0.5 ? "volume-high" : (volumeLevel > 0.2 ? "volume-medium" : "volume-low"))} size={scale(24)} color="#ffffff" />
+            <View style={{ width: scale(6), height: verticalScale(60), backgroundColor: 'rgba(255, 255, 255, 0.22)', borderRadius: scale(3), marginVertical: verticalScale(10), overflow: 'hidden', justifyContent: 'flex-end' }}>
+              <View style={{ width: '100%', height: `${Math.round(volumeLevel * 100)}%`, backgroundColor: '#ffffff', borderRadius: scale(3) }} />
             </View>
-            <Text style={{ color: '#E50914', fontSize: moderateScale(11), fontWeight: '800' }}>
-              {Math.round(volumeLevel * 100)}%
+            <Text style={{ color: '#ffffff', fontSize: moderateScale(11), fontWeight: '700', letterSpacing: 0.5 }}>
+              {volumeLevel === 0 ? "0%" : `${Math.round(volumeLevel * 100)}%`}
             </Text>
           </Animated.View>
         )}
@@ -3255,7 +3325,7 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                     </Text>
                   </TouchableOpacity>
 
-                  {/* 5. Aspect Ratio Mode Button */}
+                  {/* 5. Aspect Ratio Mode Button (Provider Default Best Fit -> Zoom to Fill -> Stretch to Screen) */}
                   <TouchableOpacity 
                     onPress={toggleContentFitMode}
                     activeOpacity={0.8}
@@ -3264,16 +3334,16 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
                       height: bottomBtnSize,
                       borderRadius: bottomBtnSize / 2,
                       borderWidth: 1,
-                      borderColor: contentFitMode === 'cover' ? '#E50914' : 'rgba(255,255,255,0.15)',
-                      backgroundColor: contentFitMode === 'cover' ? 'rgba(229, 9, 20, 0.25)' : 'rgba(0,0,0,0.65)',
+                      borderColor: contentFitMode !== 'contain' ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.15)',
+                      backgroundColor: contentFitMode !== 'contain' ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.65)',
                       alignItems: 'center',
                       justifyContent: 'center'
                     }}
                   >
                     <MaterialCommunityIcons 
-                      name={contentFitMode === 'cover' ? "aspect-ratio" : "fit-to-screen"} 
+                      name={contentFitMode === 'cover' ? "arrow-expand-all" : (contentFitMode === 'stretch' ? "stretch-to-page" : "fit-to-screen")} 
                       size={bottomIconSize} 
-                      color={contentFitMode === 'cover' ? "#E50914" : "#ffffff"} 
+                      color="#ffffff" 
                     />
                   </TouchableOpacity>
 
