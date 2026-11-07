@@ -2,3 +2,4 @@ import { AnimeSalt, AnimeSaltClient, LIBVLC_ANIMESALT_OPTIONS } from '../provide
 
 export { AnimeSalt, AnimeSaltClient, LIBVLC_ANIMESALT_OPTIONS };
 export default AnimeSalt;
+
