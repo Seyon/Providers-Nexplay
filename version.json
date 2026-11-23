@@ -2,14 +2,38 @@
   "major": 1,
   "minor": 9,
   "patch": 8,
-  "issue": 2,
-  "build": 195,
+  "issue": 7,
+  "build": 200,
   "updateType": "bugfix",
-  "timestamp": "20261111",
-  "versionName": "1.9.8.2.195-bugfix.20261111",
-  "versionCode": 1980195,
-  "lastSuccessfulBuild": "2026-11-11T17:46:03.603Z",
+  "timestamp": "20261120",
+  "versionName": "1.9.8.7.200-bugfix.20261120",
+  "versionCode": 1980200,
+  "lastSuccessfulBuild": "2026-11-20T15:05:52.398Z",
   "history": [
+    {
+      "versionName": "1.9.8.7.200-bugfix.20261120",
+      "versionCode": 1980200,
+      "updateType": "bugfix",
+      "build": 200,
+      "note": "Android TV exact UI UX implementation",
+      "builtAt": "2026-11-20T15:05:52.398Z"
+    },
+    {
+      "versionName": "1.9.8.6.199-bugfix.20261118",
+      "versionCode": 1980199,
+      "updateType": "bugfix",
+      "build": 199,
+      "note": "NexPlay TV standalone build and install",
+      "builtAt": "2026-11-18T17:44:23.902Z"
+    },
+    {
+      "versionName": "1.9.8.3.196-bugfix.20261115",
+      "versionCode": 1980196,
+      "updateType": "bugfix",
+      "build": 196,
+      "note": "Fix DNS persistence, subtitle auto-select, Naruto seasons mapping, and continue watching retention",
+      "builtAt": "2026-11-15T15:24:50.963Z"
+    },
     {
       "versionName": "1.9.8.2.195-bugfix.20261111",
       "versionCode": 1980195,
@@ -385,30 +409,6 @@
       "build": 149,
       "note": "Debug build with seek diagnostics",
       "builtAt": "2026-10-10T20:59:22.068Z"
-    },
-    {
-      "versionName": "1.8.10.3.148-bugfix.20261010",
-      "versionCode": 1900148,
-      "updateType": "bugfix",
-      "build": 148,
-      "note": "Debug build with seek diagnostics",
-      "builtAt": "2026-10-10T20:33:30.244Z"
-    },
-    {
-      "versionName": "1.8.10.2.147-bugfix.20261010",
-      "versionCode": 1900147,
-      "updateType": "bugfix",
-      "build": 147,
-      "note": "Fix LibVLC initOptions crash and update Server 1 & Server 3 mirrors",
-      "builtAt": "2026-10-10T20:10:45.844Z"
-    },
-    {
-      "versionName": "1.8.10.0.146-patch.20261010",
-      "versionCode": 1900146,
-      "updateType": "patch",
-      "build": 146,
-      "note": "Remove Server 4 and 5, enable instant server switching, and 30s watchdog",
-      "builtAt": "2026-10-10T19:31:40.843Z"
     }
   ]
 }

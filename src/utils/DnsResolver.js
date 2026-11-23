@@ -305,7 +305,7 @@ export async function querySingleDohEndpoint(endpointUrl, hostname, timeoutMs = 
  * Prioritizes the user's active selected provider and uses Promise.any race
  * to prevent carrier-blocked endpoints from causing resolution failures.
  * 
- * @param {string} domain - e.g. "api.themoviedb.org" or "new5.hdhub4u.cl"
+ * @param {string} domain - e.g. "api.themoviedb.org" or "new15.hdhub4u.cl"
  * @returns {Promise<string>} - IPv4 string or original hostname if unresolvable
  */
 export const resolveDomain = async (domain) => {
