@@ -55,7 +55,7 @@ import {
   subscribePlaybackProgress
 } from '../utils/PlaybackProgressManager';
 
-// Safe URL sanitizer for Media3 ExoPlayer:
+// Safe URL sanitizer for Media3 ExoPlayer & LibVLC:
 // Preserves AWS/Cloudflare R2 presigned URLs (%2F in credentials must NOT become %252F)
 // while properly encoding spaces and brackets in Cloudflare Worker streams
 function sanitizePlayableUrl(rawUrl) {
@@ -66,26 +66,21 @@ function sanitizePlayableUrl(rawUrl) {
     url = url.replace(/%25([0-9a-fA-F]{2})/g, '%$1');
   }
   if (url.includes('X-Amz-') || url.includes('cloudflarestorage.com') || url.includes('r2.dev')) {
-    if (url.includes(' ')) {
-      url = url.replace(/ /g, '%20');
-    }
-    return url;
+    return url.replace(/ /g, '%20').replace(/\[/g, '%5B').replace(/\]/g, '%5D');
   }
-  // If URL already contains percent-encoded sequences, avoid re-encoding
+  // If URL already contains percent-encoded sequences, ensure spaces and brackets are encoded
   if (/%[0-9a-fA-F]{2}/.test(url)) {
-    if (url.includes(' ')) {
-      url = url.replace(/ /g, '%20');
-    }
-    return url;
+    return url.replace(/ /g, '%20').replace(/\[/g, '%5B').replace(/\]/g, '%5D');
   }
   try {
     if (url.includes(' ') || url.includes('[') || url.includes(']')) {
-      url = encodeURI(decodeURI(url));
+      let res = encodeURI(decodeURI(url));
+      return res.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
     }
   } catch (_) {
-    url = url.replace(/ /g, '%20');
+    return url.replace(/ /g, '%20').replace(/\[/g, '%5B').replace(/\]/g, '%5D');
   }
-  return url;
+  return url.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
 }
 
 /**
@@ -1103,10 +1098,12 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     if (!currentSourceUri) return undefined;
     const mediaOptions = [
       ':sub-track=-1',
-      ':no-sub',
-      ':network-caching=2000',
-      ':file-caching=2000',
-      ':live-caching=2000',
+      ':network-caching=1000',
+      ':file-caching=1000',
+      ':live-caching=1000',
+      ':clock-synchro=0',
+      ':drop-late-frames',
+      ':skip-frames',
       ':http-reconnect=true',
       ':no-sub-autodetect-file',
       ':no-stats'
@@ -1296,7 +1293,6 @@ export default function MovieDetailScreen({ movie, onBack, onNavigateMovie }) {
     setIsPlaying(false);
     setHasFirstFrameRendered(false);
     setHasStartedPlayback(true);
-    setIsFullscreen(false);
     setIsBuffering(true);
     isBufferingRef.current = true;
 
