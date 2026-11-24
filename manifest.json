@@ -55,7 +55,7 @@
       "name": "Server 3 (Movies4u)",
       "enabled": true,
       "priority": 3,
-      "baseUrl": "https://new8.movies4u.garden",
+      "baseUrl": "https://new9.movies4u.garden",
       "mirrors": [
         "https://new8.movies4u.garden",
         "https://movies4u.foo"
